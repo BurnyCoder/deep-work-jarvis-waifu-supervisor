@@ -63,3 +63,5 @@ captures/
 *.ap_
 *.dex
 output-metadata.json
+
+CLAUDE.md
