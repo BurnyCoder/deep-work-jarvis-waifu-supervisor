@@ -1,6 +1,16 @@
 # Deep Work - Productivity Enforcer
 
-A Windows productivity enforcement app that helps maintain deep focus during work sessions through website blocking, app killing, AI-powered monitoring, and voice feedback.
+A productivity enforcement app that helps maintain deep focus during work sessions through blocking, AI-powered monitoring, and voice feedback.
+
+**Available for:**
+- **Windows** - Website blocking, app killing, web dashboard (this folder)
+- **Android** - App blocking, native UI ([HelloPhone/](HelloPhone/README.md))
+
+---
+
+## Windows Version
+
+A Windows productivity enforcement app with website blocking, app killing, AI-powered monitoring, and voice feedback.
 
 ## Features
 
@@ -128,6 +138,18 @@ assistant/
 **OpenAI API errors?**
 - Verify your API key in `.env`
 - Ensure you have GPT-4o access and sufficient credits
+
+---
+
+## Android Version
+
+See [HelloPhone/README.md](HelloPhone/README.md) for the Android app with:
+
+- App blocking via UsageStats + overlay
+- Screen + camera capture with MediaProjection/CameraX
+- GPT-4o Vision productivity analysis
+- Native Material 3 UI with Jetpack Compose
+- Text-to-speech feedback
 
 ## License
 
