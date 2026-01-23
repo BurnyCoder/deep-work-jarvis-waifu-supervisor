@@ -50,3 +50,16 @@ desktop.ini
 # Temp files
 *.tmp
 nul
+
+# Android
+*.iml
+.gradle/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+output-metadata.json
