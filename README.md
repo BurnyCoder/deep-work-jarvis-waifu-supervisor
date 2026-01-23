@@ -1,5 +1,7 @@
 # Deep Work - Productivity Enforcer
 
+<img width="996" height="1171" alt="image" src="https://github.com/user-attachments/assets/8e6ed5de-53d0-4da8-972c-7fac8e2f962a" />
+
 A productivity enforcement app that helps maintain deep focus during work sessions through blocking, AI-powered monitoring, and voice feedback.
 
 **Available for:**
