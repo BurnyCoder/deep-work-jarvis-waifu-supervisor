@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+psutil
+mss
+opencv-python
+pillow
+pyttsx3
+openai
+python-dotenv

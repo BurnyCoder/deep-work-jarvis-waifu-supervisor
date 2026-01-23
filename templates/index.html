@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deep Work - Productivity Enforcer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #eee;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5rem;
+            color: #fff;
+        }
+
+        .mode-display {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            margin-bottom: 30px;
+        }
+
+        .mode-label {
+            font-size: 1.2rem;
+            color: #888;
+            margin-bottom: 10px;
+        }
+
+        .mode-value {
+            font-size: 4rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .mode-on { color: #4ade80; }
+        .mode-off { color: #f87171; }
+        .mode-break { color: #facc15; }
+
+        .break-timer {
+            font-size: 1.5rem;
+            color: #facc15;
+            margin-top: 15px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        button {
+            padding: 20px;
+            font-size: 1.1rem;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: transform 0.2s, opacity 0.2s;
+            font-weight: 600;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-on {
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: white;
+        }
+
+        .btn-off {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+        }
+
+        .btn-break {
+            background: linear-gradient(135deg, #eab308, #ca8a04);
+            color: white;
+        }
+
+        .confirmation-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            display: none;
+        }
+
+        .confirmation-section.visible {
+            display: block;
+        }
+
+        .confirmation-section h3 {
+            margin-bottom: 15px;
+            color: #f87171;
+        }
+
+        .confirmation-section p {
+            color: #888;
+            margin-bottom: 15px;
+        }
+
+        .phrase-display {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            color: #facc15;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.3);
+            color: #fff;
+            font-size: 1rem;
+            margin-bottom: 15px;
+        }
+
+        input[type="text"]:focus, input[type="number"]:focus {
+            outline: none;
+            border-color: #4ade80;
+        }
+
+        .break-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+
+        .break-section h3 {
+            margin-bottom: 15px;
+            color: #facc15;
+        }
+
+        .break-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .break-controls input {
+            width: 100px;
+            margin-bottom: 0;
+        }
+
+        .break-controls span {
+            color: #888;
+        }
+
+        .results-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+        }
+
+        .results-section h3 {
+            margin-bottom: 20px;
+        }
+
+        .result-item {
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .result-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .result-productive { background: #4ade80; }
+        .result-not-productive { background: #f87171; }
+
+        .result-reason {
+            flex: 1;
+        }
+
+        .result-time {
+            color: #666;
+            font-size: 0.85rem;
+        }
+
+        .blocked-list {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+        }
+
+        .blocked-list h3 {
+            margin-bottom: 15px;
+        }
+
+        .blocked-items {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .blocked-item {
+            background: rgba(239, 68, 68, 0.2);
+            color: #f87171;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+        }
+
+        .status-bar {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+        }
+
+        .admin-warning {
+            background: rgba(234, 179, 8, 0.2);
+            border: 1px solid #eab308;
+            color: #facc15;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .monitoring-active {
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Deep Work</h1>
+
+        {% if not is_admin %}
+        <div class="admin-warning">
+            ⚠️ Not running as Administrator. Website blocking may not work.
+        </div>
+        {% endif %}
+
+        <div class="mode-display">
+            <div class="mode-label">Current Mode</div>
+            <div class="mode-value mode-{{ mode }}">{{ mode }}</div>
+            {% if mode == 'break' and break_remaining > 0 %}
+            <div class="break-timer">{{ break_remaining // 60 }}:{{ '%02d' % (break_remaining % 60) }} remaining</div>
+            {% endif %}
+            {% if mode == 'on' %}
+            <div class="break-timer monitoring-active">🔍 Monitoring active</div>
+            {% endif %}
+        </div>
+
+        <div class="controls">
+            <button class="btn-on" onclick="setMode('on')" {% if mode == 'on' %}disabled{% endif %}>
+                🎯 Start Deep Work
+            </button>
+            <button class="btn-off" onclick="showConfirmation()" {% if mode == 'off' %}disabled{% endif %}>
+                ⏹️ Stop
+            </button>
+            <button class="btn-break" onclick="showBreakSection()" {% if mode == 'break' %}disabled{% endif %}>
+                ☕ Take Break
+            </button>
+        </div>
+
+        <div id="confirmation-section" class="confirmation-section">
+            <h3>⚠️ Confirm Disable</h3>
+            <p>To disable deep work mode, type the confirmation phrase:</p>
+            <div class="phrase-display">{{ confirmation_phrase }}</div>
+            <input type="text" id="confirmation-input" placeholder="Type the phrase above...">
+            <button class="btn-off" onclick="confirmDisable()">Confirm Disable</button>
+        </div>
+
+        <div id="break-section" class="break-section" style="display: none;">
+            <h3>☕ Take a Break</h3>
+            <div class="break-controls">
+                <input type="number" id="break-duration" value="5" min="1" max="60">
+                <span>minutes</span>
+                <button class="btn-break" onclick="startBreak()">Start Break</button>
+            </div>
+        </div>
+
+        <div class="results-section">
+            <h3>📊 Recent Analysis</h3>
+            <div id="results-list">
+                {% for result in results %}
+                <div class="result-item">
+                    <div class="result-status {% if result.productive %}result-productive{% else %}result-not-productive{% endif %}"></div>
+                    <div class="result-reason">{{ result.reason }}</div>
+                    <div class="result-time">{{ result.timestamp }}</div>
+                </div>
+                {% else %}
+                <p style="color: #666;">No analysis results yet. Start deep work mode to begin monitoring.</p>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="blocked-list">
+            <h3>🚫 Blocked Sites</h3>
+            <div class="blocked-items">
+                {% for site in blocked_sites %}
+                <span class="blocked-item">{{ site }}</span>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="blocked-list">
+            <h3>💀 Blocked Apps</h3>
+            <div class="blocked-items">
+                {% for app in blocked_apps %}
+                <span class="blocked-item">{{ app }}</span>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="status-bar">
+        Sites blocked: <strong>{{ 'Yes' if sites_blocked else 'No' }}</strong>
+    </div>
+
+    <script>
+        function setMode(mode) {
+            fetch('/api/mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: mode })
+            }).then(() => location.reload());
+        }
+
+        function showConfirmation() {
+            document.getElementById('confirmation-section').classList.add('visible');
+            document.getElementById('break-section').style.display = 'none';
+            document.getElementById('confirmation-input').focus();
+        }
+
+        function showBreakSection() {
+            document.getElementById('break-section').style.display = 'block';
+            document.getElementById('confirmation-section').classList.remove('visible');
+        }
+
+        function confirmDisable() {
+            const phrase = document.getElementById('confirmation-input').value;
+            fetch('/api/mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'off', confirmation: phrase })
+            }).then(res => res.json()).then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.error || 'Incorrect confirmation phrase');
+                    document.getElementById('confirmation-input').value = '';
+                    document.getElementById('confirmation-input').focus();
+                }
+            });
+        }
+
+        function startBreak() {
+            const duration = document.getElementById('break-duration').value;
+            fetch('/api/mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'break', break_duration: parseInt(duration) })
+            }).then(() => location.reload());
+        }
+
+        // Auto-refresh page every 30 seconds to update timer and results
+        setTimeout(() => location.reload(), 30000);
+
+        // Handle Enter key in confirmation input
+        document.getElementById('confirmation-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                confirmDisable();
+            }
+        });
+    </script>
+</body>
+</html>
