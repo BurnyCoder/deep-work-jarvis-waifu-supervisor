@@ -28,6 +28,7 @@ A Windows productivity enforcement app with website blocking, app killing, AI-po
 
 - Windows 10/11
 - Python 3.9+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
 - OpenAI API key (for GPT-4o Vision)
 - Administrator privileges (for hosts file modification)
 - Webcam (optional, for webcam capture)
@@ -36,10 +37,11 @@ A Windows productivity enforcement app with website blocking, app killing, AI-po
 
 ```bash
 # Clone or download the project
-cd assistant
+cd jarvis-waifu-supervisor
 
-# Install dependencies
-pip install -r requirements.txt
+# Create virtual environment and install dependencies
+uv venv
+uv pip install -r requirements.txt
 
 # Set up your OpenAI API key
 copy .env.example .env

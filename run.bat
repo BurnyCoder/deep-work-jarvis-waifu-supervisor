@@ -9,16 +9,16 @@ if %errorLevel% neq 0 (
 
 cd /d "%~dp0"
 
-REM Check for virtual environment
-if exist ".venv\Scripts\activate.bat" (
-    call .venv\Scripts\activate.bat
-) else if exist "venv\Scripts\activate.bat" (
-    call venv\Scripts\activate.bat
-) else if exist "..\venv\Scripts\activate.bat" (
-    call ..\venv\Scripts\activate.bat
-) else if exist "..\.venv\Scripts\activate.bat" (
-    call ..\.venv\Scripts\activate.bat
+REM Create venv and install dependencies if needed
+if not exist ".venv\Scripts\activate.bat" (
+    echo Creating virtual environment with uv...
+    uv venv --python 3.13
+    echo Installing dependencies...
+    uv pip install -r requirements.txt
 )
+
+REM Activate virtual environment
+call .venv\Scripts\activate.bat
 
 REM Run the app
 python main.py
