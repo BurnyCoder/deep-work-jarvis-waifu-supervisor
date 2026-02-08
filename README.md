@@ -50,6 +50,9 @@ copy .env.example .env
 
 **Important:** Run as Administrator for website blocking to work.
 
+**Option 1: Double-click** `run.bat` (automatically requests admin privileges)
+
+**Option 2: Command line**
 ```bash
 # Right-click Command Prompt -> "Run as administrator"
 python main.py
@@ -98,6 +101,7 @@ CAPTURES_BEFORE_ANALYSIS = 5
 
 ```
 assistant/
+├── run.bat              # Double-click to run (requests admin)
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Configuration constants
 ├── state.py             # App state management
