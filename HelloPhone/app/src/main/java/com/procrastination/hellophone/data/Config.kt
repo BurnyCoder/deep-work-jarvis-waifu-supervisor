@@ -13,14 +13,12 @@ object Config {
         "com.facebook.katana",
         "com.zhiliaoapp.musically", // TikTok
         "tv.twitch.android.app",
-        "com.linkedin.android",
-        "com.google.android.youtube"
+        "com.linkedin.android"
     )
 
     // Websites to block (for DNS filtering if implemented)
     val BLOCKED_SITES = listOf(
         "reddit.com",
-        "youtube.com",
         "twitter.com",
         "x.com",
         "discord.com",
