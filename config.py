@@ -5,8 +5,6 @@ BLOCKED_SITES = [
     "reddit.com",
     "www.reddit.com",
     "old.reddit.com",
-    "youtube.com",
-    "www.youtube.com",
     "twitter.com",
     "www.twitter.com",
     "x.com",
