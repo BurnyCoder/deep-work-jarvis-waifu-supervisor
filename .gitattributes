@@ -1,0 +1,3 @@
+# Batch files must keep CRLF endings for cmd.exe (goto/label parsing quirks)
+# https://git-scm.com/docs/gitattributes#_eol
+*.bat text eol=crlf
