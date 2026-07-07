@@ -1,0 +1,89 @@
+<!-- Deep Work control panel — one page, no build step, vanilla HTML/JS.
+     Served by Flask's render_template from deepwork/webui/app.py.
+     Jinja templating: https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Deep Work</title>
+  <style>
+    /* Minimal dark panel — enough to be pleasant, no framework. */
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee;
+           max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    fieldset { border: 1px solid #444; border-radius: 8px; margin-bottom: 1rem; }
+    input, select, button { font-size: 1rem; padding: .4rem; margin: .2rem 0;
+                            background: #222; color: #eee; border: 1px solid #555;
+                            border-radius: 4px; }
+    button { cursor: pointer; background: #2a6; border: none; }
+    button.danger { background: #a33; }
+    #status { white-space: pre-line; color: #9cf; }
+  </style>
+</head>
+<body>
+  <h1>Deep Work <small id="mode">[{{ mode }}]</small></h1>
+
+  <!-- Requirement 4: topic input with dropdown of previous topics.
+       <datalist> = native combo box:
+       https://developer.mozilla.org/en-US/docs/Web/HTML/Element/datalist -->
+  <fieldset>
+    <legend>Start session (ON)</legend>
+    <form method="post" action="/start">
+      <input name="topic" list="topics" placeholder="What are you working on?" required>
+      <datalist id="topics">
+        {% for t in topics %}<option value="{{ t }}">{% endfor %}
+      </datalist>
+      <select name="project">
+        <option value="">no project allowlist</option>
+        {% for p in projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+      <button>Start</button>
+    </form>
+  </fieldset>
+
+  <!-- Requirement 5: breaks state purpose + duration + kind; optional
+       comma-separated site/app allowances while everything else stays blocked. -->
+  <fieldset>
+    <legend>Break</legend>
+    <form method="post" action="/break">
+      <input name="purpose" placeholder="What's the break for?" required>
+      <input name="minutes" type="number" min="1" max="240" value="10" required>
+      <select name="kind">
+        <option value="away">away from computer</option>
+        <option value="social_media">social media (draws 2h/day allowance)</option>
+      </select>
+      <input name="allowed_sites" placeholder="allow sites, e.g. reddit,youtube">
+      <input name="allowed_apps" placeholder="allow apps, e.g. discord,steam">
+      <button>Take break</button>
+    </form>
+  </fieldset>
+
+  <!-- Requirement 6: disabling demands the exact confirmation phrase. -->
+  <fieldset>
+    <legend>Turn OFF</legend>
+    <form method="post" action="/disable">
+      <input name="phrase" placeholder="Type the confirmation phrase" size="40" required>
+      <button class="danger">Disable everything</button>
+    </form>
+  </fieldset>
+
+  <h2>Status</h2>
+  <div id="status">loading…</div>
+
+  <script>
+    // Poll /status every 3 s — fetch API:
+    // https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
+    async function refresh() {
+      const s = await (await fetch("/status")).json();
+      document.getElementById("mode").textContent = "[" + s.mode + "]";
+      document.getElementById("status").textContent =
+        "topic: " + (s.topic || "—") +
+        "\nproductive streak: " + s.productive_streak_min + " min" +
+        "\nsocial allowance left today: " + s.social_minutes_remaining + " min" +
+        (s.break ? "\nbreak: " + s.break.purpose + " (" + s.break.kind + ") until " + s.break.until : "") +
+        (s.last_verdict ? "\nlast verdict: " + (s.last_verdict.productive ? "productive" : "not productive")
+                          + " — " + s.last_verdict.reason : "");
+    }
+    refresh(); setInterval(refresh, 3000);
+  </script>
+</body>
+</html>
