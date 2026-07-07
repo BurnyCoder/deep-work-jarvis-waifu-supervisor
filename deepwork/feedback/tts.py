@@ -9,11 +9,35 @@
 
 import logging
 import queue
+import struct
 import tempfile
 import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def fix_streamed_wav_header(path: Path) -> None:
+    """Patch the RIFF/data chunk sizes of a STREAMED wav file.
+
+    The TTS API streams audio before knowing its length, so the wav header's
+    RIFF size and data-chunk size fields arrive as the 0xFFFFFFFF placeholder
+    (verified live 2026-07-07). winsound.PlaySound silently rejects such
+    files — the bug that made all spoken feedback inaudible. Rewriting both
+    fields from the real file size makes the file spec-valid.
+    RIFF layout reference: http://soundfile.sapp.org/doc/WaveFormat/
+    """
+    data = bytearray(path.read_bytes())
+    if data[:4] != b"RIFF" or len(data) < 44:      # not a wav → leave alone
+        return
+    # Bytes 4-8: total RIFF chunk size = file size minus the 8-byte header.
+    # struct '<I' = little-endian uint32: https://docs.python.org/3/library/struct.html
+    struct.pack_into("<I", data, 4, len(data) - 8)
+    i = data.find(b"data")                         # start of the data chunk
+    if i != -1:
+        # data chunk size = everything after its own 8-byte chunk header.
+        struct.pack_into("<I", data, i + 4, len(data) - i - 8)
+    path.write_bytes(data)
 
 
 def make_openai_speaker(client, model: str, voice: str):
@@ -29,6 +53,9 @@ def make_openai_speaker(client, model: str, voice: str):
                 model=model, voice=voice, input=text,
                 response_format="wav") as response:
             response.stream_to_file(wav_path)
+        # Streamed wav headers carry placeholder sizes that winsound rejects
+        # SILENTLY (no exception, no sound) — patch them before playback.
+        fix_streamed_wav_header(wav_path)
         import winsound  # Windows-only stdlib: https://docs.python.org/3/library/winsound.html
         # SND_FILENAME plays a WAV file synchronously (returns when done).
         winsound.PlaySound(str(wav_path), winsound.SND_FILENAME)
