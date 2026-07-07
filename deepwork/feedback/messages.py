@@ -11,7 +11,14 @@ from deepwork.storage import ResultsStore
 log = logging.getLogger(__name__)
 
 # One template per message kind; {placeholders} are filled by build_prompt.
-# All ask for ONE short spoken sentence because TTS reads the result aloud.
+# Short spoken output, but RICHLY grounded input: every template ends with
+# the {session_context} block (topic, elapsed time, streak, allowance,
+# recent concrete observations) so the voice can reference real specifics.
+_CONTEXT_SUFFIX = (
+    "\n\nFull session context — ground what you say in these specifics:\n"
+    "{session_context}"
+)
+
 _TEMPLATES = {
     "good_luck": (
         "A user is starting a deep-work session on the topic: {topic!r}. "
@@ -19,15 +26,19 @@ _TEMPLATES = {
         "luck on that topic. No emojis, it will be read aloud."
     ),
     "nudge": (
-        "A user working on {topic!r} was just seen being unproductive — the "
-        "monitor said: {reason!r}. Write one short, gentle, kind spoken "
-        "sentence nudging them back to work without guilt-tripping. "
-        "No emojis, it will be read aloud."
+        "A user working on {topic!r} was just seen being unproductive. The "
+        "monitor's judgment: {reason!r}. What was concretely on their screens: "
+        "{observed!r}. Write one or two gentle, kind spoken sentences nudging "
+        "them back to work without guilt-tripping — MENTION concretely what "
+        "they were seen doing (name the site/app/content from the observation) "
+        "so they know you actually saw it. No emojis, it will be read aloud."
     ),
     "praise": (
         "A user working on {topic!r} has stayed focused for 30 minutes "
-        "straight — the monitor said: {reason!r}. Write one short, sincere "
-        "spoken sentence congratulating them. No emojis, it will be read aloud."
+        "straight. The monitor's judgment: {reason!r}. What was concretely on "
+        "their screens: {observed!r}. Write one or two sincere spoken "
+        "sentences congratulating them — name the focused work you saw them "
+        "doing. No emojis, it will be read aloud."
     ),
     "agent_running": (
         "A user's AI coding agent just started working on their task, so "
@@ -54,7 +65,9 @@ _TEMPLATES = {
 def build_prompt(kind: str, **context) -> str:
     # str.format_map fills only the placeholders the template mentions:
     # https://docs.python.org/3/library/stdtypes.html#str.format_map
-    return _TEMPLATES[kind].format_map(context)
+    # session_context defaults to a stub so ad-hoc calls never KeyError.
+    context.setdefault("session_context", "(no session context available)")
+    return (_TEMPLATES[kind] + _CONTEXT_SUFFIX).format_map(context)
 
 
 class MessageGenerator:

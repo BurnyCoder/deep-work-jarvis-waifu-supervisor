@@ -39,7 +39,8 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
         store.append_session_event({"event": "session_start", "topic": topic})
         store.save_state(state.to_dict())          # topic history survives restart
         # LLM writes the good-luck line, TTS speaks it ("good luck on x topic").
-        speech.say(messages.generate("good_luck", topic=topic))
+        speech.say(messages.generate("good_luck", topic=topic,
+                                     session_context=state.context_summary()))
         return redirect("/")
 
     @app.post("/break")
@@ -62,7 +63,8 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
         store.save_state(state.to_dict())          # allowance usage survives restart
         # TTS confirms the break plan back to the user (spec: "TTS responds").
         speech.say(messages.generate("break_ack", purpose=form["purpose"],
-                                     minutes=form["minutes"]))
+                                     minutes=form["minutes"],
+                                     session_context=state.context_summary()))
         return redirect("/")
 
     @app.post("/agentic")

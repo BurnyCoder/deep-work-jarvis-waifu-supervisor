@@ -26,15 +26,22 @@ SYSTEM_PROMPT = (
     "deep-work session. Judge whether the user is overall working on their "
     "stated topic across the series. Screens showing code, documents, research "
     "or tools related to the topic are productive; social media, videos or "
-    "games unrelated to the topic are not. Reply with productive true/false "
-    "and one short, kind, encouraging sentence explaining why."
+    "games unrelated to the topic are not. Reply with: productive true/false; "
+    "reason - one short, kind, encouraging sentence explaining why; and "
+    "observed - a concrete, specific description of what the user was actually "
+    "doing across the captures (name the visible apps, sites, window titles "
+    "and content, which monitor they were on, and whether the user was at the "
+    "webcam), written so a coach could quote it back to the user."
 )
 
 
 class ProductivityVerdict(BaseModel):
-    # The exact JSON contract from the spec: productive yes/no + reason.
+    # The exact JSON contract from the spec: productive yes/no + reason —
+    # plus `observed`, the concrete what-I-saw description the TTS messages
+    # quote back to the user ("you had Twitter open on monitor 2...").
     productive: bool
     reason: str
+    observed: str
 
 
 # Agentic mode: is the user's AI coding agent still working? Judged from ONE
