@@ -18,6 +18,9 @@ uv run python main.py --dry-hosts  # full app, hosts writes only logged (no admi
 uv run python main.py --smoke    # one real capture→vision→TTS cycle, then exit
 ```
 
+`Start Deep Work.bat` (repo root) is the double-click launcher: self-elevates
+via UAC, checks uv exists, opens the browser panel, runs `uv run python main.py`.
+
 ## Architecture (wrapper → phases → modules)
 
 `main.py` is a table of contents: elevation → config+logging → blocker
