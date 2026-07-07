@@ -20,7 +20,7 @@ class FakeResponses:
         # Minimal stand-in for openai.types.responses.ParsedResponse
         class R:
             output_parsed = verdict
-            def model_dump(self):                  # analyzer persists this
+            def model_dump(self, **kwargs):        # analyzer persists this
                 return {"output_parsed": {"productive": verdict.productive,
                                           "reason": verdict.reason}}
         return R()

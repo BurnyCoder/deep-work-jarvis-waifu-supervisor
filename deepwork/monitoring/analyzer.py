@@ -97,5 +97,9 @@ class ProductivityAnalyzer:
                                      "content": [user_content[0]] +
                                                 [{"type": "input_image",
                                                   "file": str(p)} for p in batch]}]}
-        self.store.save_llm_exchange("vision", stored_request, response.model_dump())
+        # mode="json" + warnings=False silences pydantic's union-serializer
+        # noise when dumping the SDK's ParsedResponse (harmless but loud):
+        # https://docs.pydantic.dev/latest/concepts/serialization/#serialization-warnings
+        self.store.save_llm_exchange("vision", stored_request,
+                                     response.model_dump(mode="json", warnings=False))
         return verdict

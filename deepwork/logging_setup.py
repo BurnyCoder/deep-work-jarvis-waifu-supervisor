@@ -40,6 +40,13 @@ def setup_logging(logs_dir: Path) -> Path:
         root.removeHandler(h)                # detach…
         h.close()                            # …and release the file handle
 
+    # Windows consoles default to cp1252, which mangles characters like ’ in
+    # LLM output; reconfigure stderr to utf-8 (Python 3.7+ TextIOWrapper API):
+    # https://docs.python.org/3/library/sys.html#sys.stderr
+    import sys
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     formatter = logging.Formatter(_FORMAT)   # shared by both destinations
     # utf-8 so LLM output with any unicode logs without UnicodeEncodeError:
     # https://docs.python.org/3/library/logging.handlers.html#logging.FileHandler
