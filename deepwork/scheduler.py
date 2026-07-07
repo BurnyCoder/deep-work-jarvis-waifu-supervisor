@@ -31,7 +31,8 @@ def capture_stitched():
 class Scheduler:
     def __init__(self, state, blocker, store, analyzer, messages, speech,
                  capture_interval_s: int, kill_interval_s: int,
-                 capture_fn=None, kill_fn=None):
+                 capture_fn=None, kill_fn=None,
+                 agent_checker=None, agent_check_interval_s: int = 60):
         # Collaborators injected — real objects in main.py, fakes in tests.
         self.state = state
         self.blocker = blocker
@@ -43,6 +44,10 @@ class Scheduler:
         self.kill_interval_s = kill_interval_s
         self.capture_fn = capture_fn or capture_stitched
         self.kill_fn = kill_fn or app_killer.kill_targets
+        # Agentic mode watcher (None = feature off): polls whether the user's
+        # AI coding agent is still busy and flips blocking on transitions.
+        self.agent_checker = agent_checker
+        self.agent_check_interval_s = agent_check_interval_s
         # Minutes of work each verdict certifies = the whole batch window
         # (batch_size captures x interval); set properly by main.py.
         self.verdict_minutes = 25
@@ -91,6 +96,32 @@ class Scheduler:
                                           reason=verdict.reason)
             self.speech.say(text)
 
+    def _agent_watch_tick(self) -> None:
+        # Agentic engineering mode: while the user's AI agent works on another
+        # screen, everything unblocks; the moment it finishes, all sites
+        # re-block and TTS calls the user back. Only relevant in ON+agentic.
+        from deepwork.state import Mode
+        if self.agent_checker is None or self.state.mode is not Mode.ON \
+                or not self.state.agentic_mode:
+            return
+        try:
+            image = self.capture_fn()             # reuse the normal capture path
+        except Exception:
+            log.exception("agent-watch capture failed")
+            return
+        path = self.store.save_capture(image)
+        verdict = self.agent_checker.check(path)
+        # set_agent_busy returns True only on busy<->idle TRANSITIONS, so
+        # hosts rewrites and speech never repeat on steady-state polls.
+        if not self.state.set_agent_busy(verdict.agent_working):
+            return
+        self.blocker.apply(self.state.effective_blocklist())
+        self.store.append_session_event({"event": "agent_watch",
+                                         "agent_working": verdict.agent_working,
+                                         "reason": verdict.reason})
+        kind = "agent_running" if verdict.agent_working else "agent_done"
+        self.speech.say(self.messages.generate(kind, reason=verdict.reason))
+
     # ---------- thread plumbing ----------
 
     def _loop(self, tick, interval_s: int) -> None:
@@ -110,6 +141,10 @@ class Scheduler:
             threading.Thread(target=self._loop, name="monitor", daemon=True,
                              args=(self._monitor_tick, self.capture_interval_s)),
         ]
+        if self.agent_checker is not None:         # agentic watcher (optional)
+            self.threads.append(
+                threading.Thread(target=self._loop, name="agent-watch", daemon=True,
+                                 args=(self._agent_watch_tick, self.agent_check_interval_s)))
         for t in self.threads:
             t.start()
         log.info("scheduler started (kill every %ss, capture every %ss)",

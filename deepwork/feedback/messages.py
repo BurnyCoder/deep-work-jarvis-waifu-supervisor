@@ -29,6 +29,20 @@ _TEMPLATES = {
         "straight — the monitor said: {reason!r}. Write one short, sincere "
         "spoken sentence congratulating them. No emojis, it will be read aloud."
     ),
+    "agent_running": (
+        "A user's AI coding agent just started working on their task, so "
+        "they're free to relax or browse until it finishes — the monitor "
+        "said: {reason!r}. Write one short, friendly spoken sentence telling "
+        "them the agent is running and they can take it easy for a bit. "
+        "No emojis, it will be read aloud."
+    ),
+    "agent_done": (
+        "A user's AI coding agent has just FINISHED and is waiting for their "
+        "review — the monitor said: {reason!r}. Social sites were just "
+        "re-blocked. Write one short, upbeat spoken sentence telling them "
+        "the agent is done and it's time to come back and review its work. "
+        "No emojis, it will be read aloud."
+    ),
     "break_ack": (
         "A user is taking a {minutes}-minute break for: {purpose!r}. Write one "
         "short, friendly spoken sentence acknowledging the break and saying "
