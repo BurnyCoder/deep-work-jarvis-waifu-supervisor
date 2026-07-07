@@ -76,3 +76,15 @@ class HostsBlocker:
             self.hosts_path.write_text(self._strip_block(text), encoding="utf-8")
             self._flush_dns()
             log.info("hosts block cleared")
+
+
+class DryRunBlocker:
+    """Drop-in HostsBlocker that only logs — used by `main.py --dry-hosts` so
+    the whole app can be exercised WITHOUT Administrator rights (no real
+    hosts-file writes). Same apply/clear interface (duck typing)."""
+
+    def apply(self, domains) -> None:
+        log.info("[dry-hosts] would block %d domains", len(tuple(domains)))
+
+    def clear(self) -> None:
+        log.info("[dry-hosts] would clear the hosts block")

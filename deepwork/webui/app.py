@@ -34,6 +34,7 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
         state.set_project(request.form.get("project") or None)
         blocker.apply(state.effective_blocklist()) # enforce immediately
         store.append_session_event({"event": "session_start", "topic": topic})
+        store.save_state(state.to_dict())          # topic history survives restart
         # LLM writes the good-luck line, TTS speaks it ("good luck on x topic").
         speech.say(messages.generate("good_luck", topic=topic))
         return redirect("/")
@@ -55,6 +56,7 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
             return reason, 400
         blocker.apply(state.effective_blocklist()) # unblock allowed sites only
         store.append_session_event({"event": "break_start", **form.to_dict()})
+        store.save_state(state.to_dict())          # allowance usage survives restart
         # TTS confirms the break plan back to the user (spec: "TTS responds").
         speech.say(messages.generate("break_ack", purpose=form["purpose"],
                                      minutes=form["minutes"]))
