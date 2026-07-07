@@ -56,6 +56,7 @@ class SessionState:
     social_used_by_date: dict[str, int] = field(default_factory=dict)
     productive_streak_min: int = 0                # consecutive productive mins
     last_verdict: dict | None = None              # latest analyzer result
+    session_start: datetime | None = None         # when ON began (for records)
 
     def __post_init__(self):
         # RLock (reentrant) so a locked method may call another locked method:
@@ -68,6 +69,7 @@ class SessionState:
         # Requirement 4: topic entered per session, history feeds the dropdown.
         with self._lock:
             self.mode = Mode.ON
+            self.session_start = now or datetime.now()
             self.topic = topic
             # Dedup then prepend → most-recent-first history.
             if topic in self.previous_topics:
