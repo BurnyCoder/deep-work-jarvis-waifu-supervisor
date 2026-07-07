@@ -1,10 +1,11 @@
 # Tests for deepwork/feedback/messages.py and tts.py — OpenAI text calls are
 # faked (no network); the TTS queue is tested with an injected speak function.
 
+import struct
 import time
 
 from deepwork.feedback.messages import MessageGenerator, build_prompt
-from deepwork.feedback.tts import SpeechQueue
+from deepwork.feedback.tts import SpeechQueue, fix_streamed_wav_header
 from deepwork.storage import ResultsStore
 
 
@@ -62,6 +63,34 @@ def test_speech_queue_speaks_in_order_and_survives_errors():
     q.wait_idle(timeout=5)
     q.stop()
     assert spoken == ["one", "two"]                # order kept, error skipped
+
+
+def test_fix_streamed_wav_header_patches_placeholder_sizes(tmp_path):
+    # OpenAI's STREAMED wav responses carry 0xFFFFFFFF in the RIFF and data
+    # chunk size fields (length unknown at stream start) — winsound silently
+    # refuses such files, which made TTS inaudible. Build a minimal RIFF/WAVE
+    # with the same placeholder sizes and assert both get patched to reality.
+    # RIFF layout: http://soundfile.sapp.org/doc/WaveFormat/
+    fmt = struct.pack("<4sIHHIIHH", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16)
+    pcm = b"\x00\x00" * 100                        # 100 silent samples
+    body = b"WAVE" + fmt + b"data" + struct.pack("<I", 0xFFFFFFFF) + pcm
+    wav = tmp_path / "streamed.wav"
+    wav.write_bytes(b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + body)
+
+    fix_streamed_wav_header(wav)
+
+    data = wav.read_bytes()
+    assert struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+    i = data.find(b"data")
+    assert struct.unpack_from("<I", data, i + 4)[0] == len(data) - i - 8
+
+
+def test_fix_streamed_wav_header_ignores_non_riff(tmp_path):
+    # Defensive: a non-WAV file must pass through untouched, not crash.
+    f = tmp_path / "not.wav"
+    f.write_bytes(b"ID3\x03something-mp3ish")
+    fix_streamed_wav_header(f)
+    assert f.read_bytes() == b"ID3\x03something-mp3ish"
 
 
 def test_speech_queue_stop_terminates_worker():
