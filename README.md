@@ -35,7 +35,17 @@ from a small local web panel.
    `I will not stop cool deepwork session`.
 7. **Web UI**: `http://127.0.0.1:5599` (port via `UI_PORT`): topic input
    with a dropdown of previous topics, break and disable forms, live status.
-8. **Results storage**: `results/captures/*.jpg` (stitched images),
+8. **Agentic engineering mode**: tick *agentic engineering* when starting a
+   session (or toggle mid-session). A vision check every 60 s
+   (`AGENT_CHECK_INTERVAL_S`) watches your screens for an AI coding agent
+   (Claude Code, Cursor, terminal agents) that is actively working — spinner,
+   streaming output, running tools. While it works, **everything unblocks**
+   so you can scroll Twitter guilt-free; the moment it finishes or waits for
+   your input, the full blocklist snaps back and the voice calls you over to
+   review. Waiting time is free (no 2 h allowance drain), and productivity
+   nudges pause while the agent runs. Cost: one low-detail capture per
+   minute, a few cents per workday.
+9. **Results storage**: `results/captures/*.jpg` (stitched images),
    `results/llm/*.json` (full, uncut LLM request/response pairs),
    `results/sessions/*.jsonl` (timestamped event log), `results/state.json`
    (allowance + topic history, survives restarts). Runtime logs stream to the

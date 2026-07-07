@@ -57,6 +57,11 @@ class SessionState:
     productive_streak_min: int = 0                # consecutive productive mins
     last_verdict: dict | None = None              # latest analyzer result
     session_start: datetime | None = None         # when ON began (for records)
+    # Agentic engineering mode: while an AI coding agent is detected working
+    # on another screen, the whole blocklist opens; when it finishes,
+    # everything re-blocks (user is "waiting", not slacking).
+    agentic_mode: bool = False                    # opted in for this session
+    agent_busy: bool = False                      # latest vision verdict
 
     def __post_init__(self):
         # RLock (reentrant) so a locked method may call another locked method:
@@ -151,6 +156,11 @@ class SessionState:
     def effective_blocklist(self) -> tuple[str, ...]:
         # Full blocklist minus every domain variant of the allowed site keys.
         with self._lock:
+            # Agentic mode + agent working = sanctioned waiting time: the
+            # ENTIRE blocklist opens (user decision); re-applied full the
+            # moment the agent is detected idle.
+            if self.mode is Mode.ON and self.agentic_mode and self.agent_busy:
+                return ()
             freed = {d for key in self._allowed_site_keys()
                      for d in expand_www(SITE_DOMAINS.get(key, []))}
             return tuple(d for d in all_blocked_domains() if d not in freed)
@@ -164,6 +174,21 @@ class SessionState:
             return tuple(p for procs in APP_PROCESSES.values() for p in procs
                          if p not in spared)
 
+    def set_agentic(self, on: bool) -> None:
+        # Enable/disable agentic mode; busy flag resets so unblocking only
+        # ever follows a fresh vision verdict, never a stale one.
+        with self._lock:
+            self.agentic_mode = on
+            self.agent_busy = False
+
+    def set_agent_busy(self, busy: bool) -> bool:
+        """Record the latest agent-activity verdict; True only on CHANGE so
+        the scheduler applies hosts/speech on transitions, not every poll."""
+        with self._lock:
+            changed = busy != self.agent_busy
+            self.agent_busy = busy
+            return changed
+
     def set_project(self, name: str | None) -> None:
         # Requirement 5: a "productive project" may allowlist specific
         # social sites while enforcement stays ON for everything else.
@@ -176,8 +201,11 @@ class SessionState:
     def monitoring_active(self) -> bool:
         # Captures/analysis run only during focused work: BREAK of either
         # kind pauses monitoring (nudging someone on a sanctioned break or
-        # away from the desk would be noise), OFF disables everything.
-        return self.mode is Mode.ON
+        # away from the desk would be noise), OFF disables everything, and
+        # agent-busy waiting time is sanctioned too — no nudges while the
+        # user's AI agent is still working. Normal monitoring resumes the
+        # moment the agent goes idle.
+        return self.mode is Mode.ON and not (self.agentic_mode and self.agent_busy)
 
     def record_verdict(self, productive: bool, minutes: int) -> str | None:
         """Fold one analyzer verdict into the streak; return 'praise'/'nudge'/None.

@@ -36,7 +36,20 @@
         <option value="">no project allowlist</option>
         {% for p in projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
       </select>
+      <!-- Agentic engineering: while your AI coding agent is detected working
+           on any screen, everything unblocks; when it finishes, everything
+           re-blocks and the voice calls you back. -->
+      <label><input type="checkbox" name="agentic">
+        agentic engineering (social allowed while AI agent works)</label>
       <button>Start</button>
+    </form>
+  </fieldset>
+
+  <fieldset>
+    <legend>Agentic mode toggle (mid-session)</legend>
+    <form method="post" action="/agentic">
+      <label><input type="checkbox" name="enabled"> enabled</label>
+      <button>Apply</button>
     </form>
   </fieldset>
 
@@ -79,6 +92,8 @@
         "topic: " + (s.topic || "—") +
         "\nproductive streak: " + s.productive_streak_min + " min" +
         "\nsocial allowance left today: " + s.social_minutes_remaining + " min" +
+        (s.agentic_mode ? "\nagentic mode: " + (s.agent_busy ?
+          "agent working — everything unblocked" : "agent idle — blocking active") : "") +
         (s.break ? "\nbreak: " + s.break.purpose + " (" + s.break.kind + ") until " + s.break.until : "") +
         (s.last_verdict ? "\nlast verdict: " + (s.last_verdict.productive ? "productive" : "not productive")
                           + " — " + s.last_verdict.reason : "");

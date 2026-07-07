@@ -5,7 +5,12 @@
 
 from PIL import Image
 
-from deepwork.monitoring.analyzer import ProductivityAnalyzer, ProductivityVerdict
+from deepwork.monitoring.analyzer import (
+    AgentActivityChecker,
+    AgentActivityVerdict,
+    ProductivityAnalyzer,
+    ProductivityVerdict,
+)
 from deepwork.storage import ResultsStore
 
 
@@ -21,8 +26,7 @@ class FakeResponses:
         class R:
             output_parsed = verdict
             def model_dump(self, **kwargs):        # analyzer persists this
-                return {"output_parsed": {"productive": verdict.productive,
-                                          "reason": verdict.reason}}
+                return {"output_parsed": verdict.model_dump()}
         return R()
 
 
@@ -71,6 +75,26 @@ def test_request_shape_matches_responses_api(tmp_path):
     # The user's topic is in the text part so the model judges relevance.
     texts = [c for c in user_content if c["type"] == "input_text"]
     assert any("thesis" in t["text"] for t in texts)
+
+
+def test_agent_activity_checker_request_shape_and_persistence(tmp_path):
+    verdict = AgentActivityVerdict(agent_working=True, reason="tokens streaming")
+    client = FakeClient(verdict)
+    store = ResultsStore(tmp_path)
+    checker = AgentActivityChecker(client=client, model="test-model", store=store)
+
+    result = checker.check(save_capture(store))
+    assert result.agent_working is True
+    kwargs = client.responses.last_kwargs
+    assert kwargs["model"] == "test-model"
+    assert kwargs["text_format"] is AgentActivityVerdict
+    user_content = kwargs["input"][-1]["content"]
+    images = [c for c in user_content if c["type"] == "input_image"]
+    # Exactly ONE low-detail capture per check (fast 60s cadence, cheap).
+    assert len(images) == 1 and images[0]["detail"] == "low"
+    assert images[0]["image_url"].startswith("data:image/jpeg;base64,")
+    # Full exchange persisted under its own kind for auditability.
+    assert list((tmp_path / "llm").glob("*_agent_watch.json"))
 
 
 def test_exchange_persisted_uncut_and_batch_reset(tmp_path):
