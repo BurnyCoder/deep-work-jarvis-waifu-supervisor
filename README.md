@@ -5,7 +5,7 @@ distraction apps, watches your screens + webcam with an AI coach every five
 minutes, and speaks encouragement or gentle nudges out loud, all controlled
 from a small local web panel.
 
-<img width="1278" height="1051" alt="image" src="https://github.com/user-attachments/assets/348fd037-84b0-422a-9c74-cbf41163c0d2" />
+<img width="1024" height="1084" alt="image" src="https://github.com/user-attachments/assets/45316b36-f744-49d9-bbed-2ab6bdbcaaf7" />
 
 ## Features
 
