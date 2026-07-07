@@ -40,7 +40,7 @@ selection → object wiring → atexit safety → run. All logic lives in
 | `monitoring/screen_capture.py` | mss per-monitor grabs → PIL |
 | `monitoring/webcam_capture.py` | OpenCV `CAP_DSHOW` single frame, non-fatal on failure |
 | `monitoring/stitcher.py` | labeled vertical composite of all captures |
-| `monitoring/analyzer.py` | batch of N captures → `responses.parse` → `ProductivityVerdict` |
+| `monitoring/analyzer.py` | batch of N captures → `responses.parse` → `ProductivityVerdict`; `AgentActivityChecker` single-capture "is the AI agent busy?" poll for agentic mode |
 | `feedback/messages.py` | LLM-written good-luck / nudge / praise / break-ack sentences |
 | `feedback/tts.py` | OpenAI TTS→WAV→winsound or pyttsx3; single `SpeechQueue` worker |
 | `webui/app.py` | Flask factory: `/`, `/start`, `/break`, `/disable`, `/status` |

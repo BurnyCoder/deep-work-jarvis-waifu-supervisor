@@ -119,6 +119,39 @@ def test_monitoring_only_active_when_on():
     assert not s.monitoring_active                 # breaks pause monitoring
 
 
+def test_agentic_mode_unblocks_everything_only_while_agent_busy():
+    s = make_state()
+    s.start_session("agentic coding", now=T0)
+    s.set_agentic(True)
+    # Agent not (yet) detected busy → everything still blocked.
+    assert "reddit.com" in s.effective_blocklist()
+    assert s.set_agent_busy(True) is True          # transition reported
+    assert s.effective_blocklist() == ()           # user decision: ALL unblocked
+    assert s.set_agent_busy(True) is False         # same verdict → no transition
+    assert s.set_agent_busy(False) is True         # agent finished → transition
+    assert "reddit.com" in s.effective_blocklist() # full blocklist restored
+
+
+def test_agentic_busy_requires_agentic_mode_and_on():
+    s = make_state()
+    s.start_session("x", now=T0)
+    s.set_agent_busy(True)                         # busy but agentic mode OFF
+    assert "reddit.com" in s.effective_blocklist() # → no unblocking
+
+
+def test_agentic_busy_pauses_productivity_monitoring():
+    # Sanctioned downtime: no captures/nudges while the agent works; normal
+    # monitoring resumes once the agent goes idle.
+    s = make_state()
+    s.start_session("x", now=T0)
+    s.set_agentic(True)
+    assert s.monitoring_active
+    s.set_agent_busy(True)
+    assert not s.monitoring_active
+    s.set_agent_busy(False)
+    assert s.monitoring_active
+
+
 def test_persistence_round_trip():
     s = make_state()
     s.start_session("write thesis", now=T0)

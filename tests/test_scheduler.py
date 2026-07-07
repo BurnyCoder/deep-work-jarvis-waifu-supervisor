@@ -38,6 +38,19 @@ class FakeAnalyzer:
         return self.verdict
 
 
+class FakeAgentChecker:
+    # Scriptable sequence of agent_working booleans, one per check() call.
+    def __init__(self, sequence):
+        self.sequence = list(sequence)
+        self.checks = 0
+
+    def check(self, path):
+        self.checks += 1
+        from deepwork.monitoring.analyzer import AgentActivityVerdict
+        return AgentActivityVerdict(agent_working=self.sequence.pop(0),
+                                    reason="scripted")
+
+
 class FakeMessages:
     def generate(self, kind, **ctx):
         return f"<{kind}>"
@@ -51,7 +64,7 @@ class FakeSpeech:
         self.spoken.append(text)
 
 
-def make_scheduler(tmp_path, verdict=None, state=None):
+def make_scheduler(tmp_path, verdict=None, state=None, agent_checker=None):
     state = state or SessionState()
     kills = []
     sched = Scheduler(
@@ -66,6 +79,8 @@ def make_scheduler(tmp_path, verdict=None, state=None):
         # capture_fn returns an already-stitched PIL image (hardware-free)
         capture_fn=lambda: Image.new("RGB", (8, 8), "green"),
         kill_fn=lambda names: kills.append(tuple(names)) or [],
+        agent_checker=agent_checker,
+        agent_check_interval_s=1,
     )
     return sched, state, kills
 
@@ -118,6 +133,33 @@ def test_praise_after_thirty_productive_minutes(tmp_path):
     assert sched.speech.spoken == []               # 25 min: not yet
     sched._monitor_tick()
     assert sched.speech.spoken == ["<praise>"]     # 50 min: praise once
+
+
+def test_agent_watch_unblocks_then_reblocks_on_transitions(tmp_path):
+    checker = FakeAgentChecker([True, True, False])
+    sched, state, _ = make_scheduler(tmp_path, agent_checker=checker)
+    state.start_session("agentic coding", now=T0)
+    state.set_agentic(True)
+    # Tick 1: agent detected busy → transition → everything unblocks + speech.
+    sched._agent_watch_tick()
+    assert sched.blocker.applied[-1] == ()          # empty blocklist applied
+    assert sched.speech.spoken == ["<agent_running>"]
+    # Tick 2: still busy → NO new blocker call, NO repeated speech.
+    sched._agent_watch_tick()
+    assert len(sched.blocker.applied) == 1
+    assert sched.speech.spoken == ["<agent_running>"]
+    # Tick 3: agent finished → full blocklist restored + agent_done spoken.
+    sched._agent_watch_tick()
+    assert "reddit.com" in sched.blocker.applied[-1]
+    assert sched.speech.spoken == ["<agent_running>", "<agent_done>"]
+
+
+def test_agent_watch_inactive_without_agentic_mode(tmp_path):
+    checker = FakeAgentChecker([True])
+    sched, state, _ = make_scheduler(tmp_path, agent_checker=checker)
+    state.start_session("normal work", now=T0)      # agentic mode NOT enabled
+    sched._agent_watch_tick()
+    assert checker.checks == 0                      # no capture, no API call
 
 
 def test_threads_start_and_stop_cleanly(tmp_path):

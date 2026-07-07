@@ -37,6 +37,65 @@ class ProductivityVerdict(BaseModel):
     reason: str
 
 
+# Agentic mode: is the user's AI coding agent still working? Judged from ONE
+# capture per poll (fast cadence beats batched depth for this question).
+AGENT_WATCH_PROMPT = (
+    "You are watching a developer's screens for agentic engineering. Decide "
+    "whether an AI coding agent (e.g. Claude Code, Cursor, Copilot, a "
+    "terminal/IDE agent) is ACTIVELY WORKING on any monitor right now: look "
+    "for streaming/generating output, running tools or commands, progress "
+    "spinners, or 'esc to interrupt'-style status lines. It is NOT working "
+    "if it shows a finished response waiting for user input, a permission "
+    "prompt awaiting approval, or no agent is visible at all. Reply with "
+    "agent_working true/false and one short sentence of evidence."
+)
+
+
+class AgentActivityVerdict(BaseModel):
+    # Structured contract for the agent-watch poll.
+    agent_working: bool
+    reason: str
+
+
+class AgentActivityChecker:
+    """One-capture vision check: is the AI agent on screen still busy?"""
+
+    def __init__(self, client, model: str, store: ResultsStore):
+        self.client = client                      # openai.OpenAI or test fake
+        self.model = model
+        self.store = store
+
+    def check(self, path: Path) -> AgentActivityVerdict:
+        # Same responses.parse structured-output call as the productivity
+        # analyzer, but a single low-detail image (85 tokens) per poll:
+        # https://developers.openai.com/api/docs/guides/structured-outputs
+        user_content = [
+            {"type": "input_text", "text": "Current capture of all monitors follows."},
+            {"type": "input_image", "image_url": _image_to_data_url(path),
+             "detail": "low"},
+        ]
+        request = {"model": self.model,
+                   "input": [{"role": "system", "content": AGENT_WATCH_PROMPT},
+                             {"role": "user", "content": user_content}],
+                   "text_format": AgentActivityVerdict}
+        log.info("agent-watch request: model=%s capture=%s system=%r",
+                 self.model, path.name, AGENT_WATCH_PROMPT)
+        response = self.client.responses.parse(**request)
+        verdict: AgentActivityVerdict = response.output_parsed
+        log.info("agent-watch verdict: working=%s reason=%s",
+                 verdict.agent_working, verdict.reason)
+        stored_request = {**request,
+                          "text_format": AgentActivityVerdict.__name__,
+                          "input": [request["input"][0],
+                                    {"role": "user",
+                                     "content": [user_content[0],
+                                                 {"type": "input_image",
+                                                  "file": str(path)}]}]}
+        self.store.save_llm_exchange("agent_watch", stored_request,
+                                     response.model_dump(mode="json", warnings=False))
+        return verdict
+
+
 def _image_to_data_url(path: Path) -> str:
     # Vision API accepts base64 data URLs for local files:
     # https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input

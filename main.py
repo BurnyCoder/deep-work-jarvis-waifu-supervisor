@@ -32,7 +32,7 @@ def build_app_objects(cfg, blocker):
 
     from deepwork.feedback.messages import MessageGenerator
     from deepwork.feedback.tts import SpeechQueue, make_speaker
-    from deepwork.monitoring.analyzer import ProductivityAnalyzer
+    from deepwork.monitoring.analyzer import AgentActivityChecker, ProductivityAnalyzer
     from deepwork.scheduler import Scheduler
     from deepwork.state import SessionState
     from deepwork.storage import ResultsStore
@@ -52,7 +52,11 @@ def build_app_objects(cfg, blocker):
     scheduler = Scheduler(state=state, blocker=blocker, store=store,
                           analyzer=analyzer, messages=messages, speech=speech,
                           capture_interval_s=cfg.capture_interval_s,
-                          kill_interval_s=cfg.kill_interval_s)
+                          kill_interval_s=cfg.kill_interval_s,
+                          # Agentic mode watcher: fast single-capture polls.
+                          agent_checker=AgentActivityChecker(
+                              client=client, model=cfg.vision_model, store=store),
+                          agent_check_interval_s=cfg.agent_check_interval_s)
     # One verdict certifies the whole batch window, in minutes.
     scheduler.verdict_minutes = max(1, cfg.batch_size * cfg.capture_interval_s // 60)
 
