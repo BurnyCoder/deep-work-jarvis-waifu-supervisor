@@ -52,7 +52,11 @@ class FakeAgentChecker:
 
 
 class FakeMessages:
+    def __init__(self):
+        self.calls = []                            # (kind, kwargs) history
+
     def generate(self, kind, **ctx):
+        self.calls.append((kind, ctx))
         return f"<{kind}>"
 
 
@@ -113,17 +117,24 @@ def test_monitor_tick_skips_when_monitoring_inactive(tmp_path):
 
 
 def test_capture_verdict_nudge_flows_to_speech(tmp_path):
-    verdict = ProductivityVerdict(productive=False, reason="watching videos")
+    verdict = ProductivityVerdict(productive=False, reason="watching videos",
+                                  observed="YouTube fullscreen on monitor 1")
     sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
     state.start_session("thesis", now=T0)
     sched._monitor_tick()
     assert sched.analyzer.captures[0][1] == "thesis"   # topic reaches analyzer
     assert sched.speech.spoken == ["<nudge>"]          # unproductive → nudge
     assert state.last_verdict["reason"] == "watching videos"
+    # The nudge prompt receives what was SEEN plus the whole session context.
+    kind, kwargs = sched.messages.calls[-1]
+    assert kind == "nudge"
+    assert kwargs["observed"] == "YouTube fullscreen on monitor 1"
+    assert "thesis" in kwargs["session_context"]
 
 
 def test_praise_after_thirty_productive_minutes(tmp_path):
-    verdict = ProductivityVerdict(productive=True, reason="deep in code")
+    verdict = ProductivityVerdict(productive=True, reason="deep in code",
+                                  observed="IDE focused, tests green")
     sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
     state.start_session("thesis", now=T0)
     # Each verdict covers batch_size * interval minutes; with the test's

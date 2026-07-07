@@ -98,6 +98,28 @@ def test_effective_kill_list_honours_break_app_allowance():
     assert "discord.exe" not in killed and "steam.exe" in killed
 
 
+def test_recent_verdicts_window_stores_observed_and_caps_at_five():
+    s = make_state()
+    s.start_session("thesis", now=T0)
+    for i in range(7):                             # 7 verdicts → keep last 5
+        s.record_verdict(True, minutes=5, observed=f"screen shows doc v{i}")
+    assert len(s.recent_verdicts) == 5
+    assert s.recent_verdicts[-1]["observed"] == "screen shows doc v6"
+    assert s.recent_verdicts[0]["observed"] == "screen shows doc v2"
+
+
+def test_context_summary_grounds_all_the_facts():
+    from datetime import timedelta
+    s = make_state()
+    s.start_session("write thesis", now=T0)
+    s.record_verdict(False, minutes=25, observed="Reddit threads on monitor 1")
+    ctx = s.context_summary(now=T0 + timedelta(minutes=40))
+    assert "write thesis" in ctx                   # topic
+    assert "40" in ctx                             # minutes into the session
+    assert "120" in ctx                            # allowance remaining
+    assert "Reddit threads on monitor 1" in ctx    # recent observation window
+
+
 def test_verdict_streak_praise_and_nudge():
     s = make_state()
     s.start_session("x", now=T0)
