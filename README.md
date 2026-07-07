@@ -59,6 +59,13 @@ All configuration lives in `.env` — see `.env.example` for every variable
 
 ## Run
 
+**Easiest:** double-click **`Start Deep Work.bat`** in Explorer — it asks for
+administrator permission once (UAC), starts the app with live logs in a
+console window, and opens the control panel in your browser. Closing that
+window stops the app and restores the hosts file.
+
+Or from a terminal:
+
 ```powershell
 uv run pytest                      # unit tests: no admin, no API key, no hardware
 uv run python main.py --smoke      # one real capture→vision→speech cycle, then exits
