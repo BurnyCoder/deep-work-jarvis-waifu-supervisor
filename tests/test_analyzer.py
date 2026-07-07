@@ -6,6 +6,7 @@
 from PIL import Image
 
 from deepwork.monitoring.analyzer import (
+    SYSTEM_PROMPT,
     AgentActivityChecker,
     AgentActivityVerdict,
     ProductivityAnalyzer,
@@ -35,8 +36,19 @@ class FakeClient:
         self.responses = FakeResponses(verdict)
 
 
+def test_verdict_requires_observed_description():
+    # The nudge/praise TTS quotes what was seen, so `observed` is a REQUIRED
+    # part of the vision contract, and the system prompt must ask for it.
+    v = ProductivityVerdict(productive=False, reason="off-topic",
+                            observed="Twitter feed open on monitor 2")
+    assert "Twitter" in v.observed
+    assert "observed" in SYSTEM_PROMPT           # prompt requests the field
+    assert "concrete" in SYSTEM_PROMPT.lower()   # ...and concrete specifics
+
+
 def make_analyzer(tmp_path, verdict=None, batch_size=2):
-    verdict = verdict or ProductivityVerdict(productive=True, reason="deep in code")
+    verdict = verdict or ProductivityVerdict(productive=True, reason="deep in code",
+                                             observed="IDE with tests running")
     client = FakeClient(verdict)
     store = ResultsStore(tmp_path)
     analyzer = ProductivityAnalyzer(client=client, model="test-model",

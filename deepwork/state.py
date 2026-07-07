@@ -56,6 +56,9 @@ class SessionState:
     social_used_by_date: dict[str, int] = field(default_factory=dict)
     productive_streak_min: int = 0                # consecutive productive mins
     last_verdict: dict | None = None              # latest analyzer result
+    # Rolling window of the last few verdicts (ts/productive/reason/observed)
+    # — the raw material context_summary() feeds to every TTS message prompt.
+    recent_verdicts: list[dict] = field(default_factory=list)
     session_start: datetime | None = None         # when ON began (for records)
     # Agentic engineering mode: while an AI coding agent is detected working
     # on another screen, the whole blocklist opens; when it finishes,
@@ -207,14 +210,22 @@ class SessionState:
         # moment the agent goes idle.
         return self.mode is Mode.ON and not (self.agentic_mode and self.agent_busy)
 
-    def record_verdict(self, productive: bool, minutes: int) -> str | None:
+    def record_verdict(self, productive: bool, minutes: int,
+                       observed: str = "", reason: str = "",
+                       now: datetime | None = None) -> str | None:
         """Fold one analyzer verdict into the streak; return 'praise'/'nudge'/None.
 
         Requirement 4: nudge whenever unproductive; praise once per 30
         consecutive productive minutes (streak then restarts so a long
-        session earns praise again every 30 min).
+        session earns praise again every 30 min). Every verdict also joins
+        the rolling recent_verdicts window (last 5) for TTS grounding.
         """
         with self._lock:
+            self.recent_verdicts.append({
+                "ts": (now or datetime.now()).strftime("%H:%M"),
+                "productive": productive, "reason": reason, "observed": observed,
+            })
+            del self.recent_verdicts[:-5]          # keep only the last 5
             if not productive:
                 self.productive_streak_min = 0
                 return "nudge"
@@ -223,6 +234,34 @@ class SessionState:
                 self.productive_streak_min = 0
                 return "praise"
             return None
+
+    def context_summary(self, now: datetime | None = None) -> str:
+        """One multi-line snapshot of the whole session — handed to every TTS
+        message prompt so spoken feedback can reference real specifics."""
+        now = now or datetime.now()
+        with self._lock:
+            minutes_in = int((now - self.session_start).total_seconds() // 60) \
+                if self.session_start else 0
+            lines = [
+                f"topic: {self.topic or '(none)'}",
+                f"minutes into session: {minutes_in}",
+                f"productive streak: {self.productive_streak_min} min",
+                f"social allowance left today: {self.social_minutes_remaining(now)} min",
+            ]
+            if self.active_project:
+                lines.append(f"active project allowlist: {self.active_project}")
+            if self.agentic_mode:
+                lines.append("agentic mode: on, AI agent currently "
+                             + ("working" if self.agent_busy else "idle"))
+            if self.current_break:
+                lines.append(f"on a {self.current_break.kind} break for: "
+                             f"{self.current_break.purpose}")
+            if self.recent_verdicts:
+                lines.append("recent monitor observations (oldest first):")
+                lines += [f"  [{v['ts']}] {'productive' if v['productive'] else 'NOT productive'}"
+                          f" - {v['observed'] or v['reason']}"
+                          for v in self.recent_verdicts]
+            return "\n".join(lines)
 
     # ---------- persistence (results/state.json via storage.py) ----------
 

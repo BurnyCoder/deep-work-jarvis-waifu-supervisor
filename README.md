@@ -22,8 +22,11 @@ from a small local web panel.
    `{productive: yes/no, reason: <encouraging sentence>}`.
 4. **Spoken feedback**: an LLM writes (and OpenAI TTS speaks) a good-luck
    message when you start a topic, a gentle nudge when you're off track, and
-   praise after 30 consecutive productive minutes. Offline `pyttsx3` voice
-   available via `TTS_ENGINE=pyttsx3`.
+   praise after 30 consecutive productive minutes. Nudges and praise quote
+   what the monitor concretely saw ("you had Twitter open on monitor 2..."),
+   and every message is grounded in full session context — topic, elapsed
+   time, streak, allowance left, and the last few observations. Offline
+   `pyttsx3` voice available via `TTS_ENGINE=pyttsx3`.
 5. **Modes**: **ON** (everything enforced), **OFF** (nothing), **BREAK**
    (timed, auto-restoring; you state what it's for and how long, TTS
    acknowledges). Breaks can allow only specific sites/apps

@@ -85,15 +85,23 @@ class Scheduler:
         # Fold the verdict into the streak; outcome may demand speech.
         self.state.last_verdict = {"productive": verdict.productive,
                                    "reason": verdict.reason,
+                                   "observed": verdict.observed,
                                    "ts": datetime.now().isoformat()}
         outcome = self.state.record_verdict(verdict.productive,
-                                            minutes=self.verdict_minutes)
+                                            minutes=self.verdict_minutes,
+                                            observed=verdict.observed,
+                                            reason=verdict.reason)
         self.store.append_session_event({"event": "verdict",
                                          "productive": verdict.productive,
-                                         "reason": verdict.reason})
+                                         "reason": verdict.reason,
+                                         "observed": verdict.observed})
         if outcome:                                # "nudge" | "praise"
+            # The message model gets what was SEEN plus the whole session
+            # snapshot, so the spoken line can quote concrete specifics.
             text = self.messages.generate(outcome, topic=self.state.topic,
-                                          reason=verdict.reason)
+                                          reason=verdict.reason,
+                                          observed=verdict.observed,
+                                          session_context=self.state.context_summary())
             self.speech.say(text)
 
     def _agent_watch_tick(self) -> None:
@@ -120,7 +128,8 @@ class Scheduler:
                                          "agent_working": verdict.agent_working,
                                          "reason": verdict.reason})
         kind = "agent_running" if verdict.agent_working else "agent_done"
-        self.speech.say(self.messages.generate(kind, reason=verdict.reason))
+        self.speech.say(self.messages.generate(kind, reason=verdict.reason,
+                                               session_context=self.state.context_summary()))
 
     # ---------- thread plumbing ----------
 
