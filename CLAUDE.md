@@ -42,7 +42,7 @@ Do not duplicate code, use reusable functions for various features, and call the
 
 Add comprehensible timestamped logging, make sure all prompts and outputs are written to timestamped logs file and terminal realtime.
 
-Add comments to each file, function and line of code with local explanation and global context. Actually explain how the line does it. Don't generate them using scripts, edit each line using file edit tool. Search the web for context.
+Add comments to each file, function and line of code with local explanation and global context sections. Actually explain how the line does it. Don't generate them using scripts, edit each line using file edit tool. Search the web for context.
 
 Make sure as many lines of code as possible are grounded in some library docs, guides on the internet, github repos, programming language docs, etc., and source link them in comments. Make sure to double-check the accuracy of your code while implementing code from these sources to minimize hallucinations.
 
