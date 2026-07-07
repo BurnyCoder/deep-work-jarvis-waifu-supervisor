@@ -1,0 +1,24 @@
+# Secrets: .env holds OPENAI_API_KEY and must never reach git
+# (python-dotenv pattern: https://pypi.org/project/python-dotenv/)
+.env
+
+# Virtual environment created by uv in the project root
+# (https://docs.astral.sh/uv/guides/projects/#working-on-projects)
+.venv/
+
+# Runtime output: captured screenshots/webcam images, LLM request/response
+# JSON, session records — user data, not source code
+results/
+
+# Timestamped runtime log files (deepwork/logging_setup.py writes here)
+logs/
+
+# Python bytecode caches (https://docs.python.org/3/tutorial/modules.html#compiled-python-files)
+__pycache__/
+*.py[cod]
+
+# pytest cache directory (https://docs.pytest.org/en/stable/how-to/cache.html)
+.pytest_cache/
+
+# Temporary WAV files produced by OpenAI TTS before winsound playback
+*.wav
