@@ -93,6 +93,7 @@ class Config:
     capture_interval_s: int = 300            # requirement 3: every 5 minutes
     batch_size: int = 5                      # captures per vision analysis
     kill_interval_s: int = 3                 # app-kill sweep period (seconds)
+    agent_check_interval_s: int = 60         # agentic mode: AI-agent activity poll
     daily_social_cap_min: int = 120          # requirement 5: 2 h/day cap
     ui_port: int = 5000                      # Flask default port
     hosts_path: str = HOSTS_PATH
@@ -119,6 +120,7 @@ def load_config(env: Mapping[str, str]) -> Config:
         capture_interval_s=int(env.get("CAPTURE_INTERVAL_S", Config.capture_interval_s)),
         batch_size=int(env.get("BATCH_SIZE", Config.batch_size)),
         kill_interval_s=int(env.get("KILL_INTERVAL_S", Config.kill_interval_s)),
+        agent_check_interval_s=int(env.get("AGENT_CHECK_INTERVAL_S", Config.agent_check_interval_s)),
         daily_social_cap_min=int(env.get("DAILY_SOCIAL_CAP_MIN", Config.daily_social_cap_min)),
         ui_port=int(env.get("UI_PORT", Config.ui_port)),
     )

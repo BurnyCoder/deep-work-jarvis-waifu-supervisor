@@ -32,6 +32,9 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
         topic = request.form["topic"].strip()
         state.start_session(topic)
         state.set_project(request.form.get("project") or None)
+        # Agentic engineering: checkbox posts "on" when ticked (HTML checkbox
+        # semantics: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/checkbox)
+        state.set_agentic(request.form.get("agentic") == "on")
         blocker.apply(state.effective_blocklist()) # enforce immediately
         store.append_session_event({"event": "session_start", "topic": topic})
         store.save_state(state.to_dict())          # topic history survives restart
@@ -62,6 +65,16 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
                                      minutes=form["minutes"]))
         return redirect("/")
 
+    @app.post("/agentic")
+    def toggle_agentic():
+        # Mid-session toggle for agentic mode; re-apply blocking right away
+        # (turning it OFF while the agent was busy must re-block instantly).
+        state.set_agentic(request.form.get("enabled") == "on")
+        blocker.apply(state.effective_blocklist())
+        store.append_session_event({"event": "agentic_toggle",
+                                    "enabled": state.agentic_mode})
+        return redirect("/")
+
     @app.post("/disable")
     def disable():
         # Requirement 6: exact confirmation phrase or a hard 403.
@@ -81,6 +94,8 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
             "productive_streak_min": state.productive_streak_min,
             "social_minutes_remaining": state.social_minutes_remaining(),
             "last_verdict": state.last_verdict,
+            "agentic_mode": state.agentic_mode,
+            "agent_busy": state.agent_busy,
             "break": {"purpose": br.purpose, "kind": br.kind,
                       "until": br.end_time.isoformat()} if br else None,
         })

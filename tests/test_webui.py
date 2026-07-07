@@ -92,3 +92,23 @@ def test_status_json_shape(ui):
     data = client.get("/status").get_json()
     assert data["mode"] == "on" and data["topic"] == "t"
     assert "social_minutes_remaining" in data and "last_verdict" in data
+    assert "agentic_mode" in data and "agent_busy" in data
+
+
+def test_start_with_agentic_checkbox_enables_agentic_mode(ui):
+    client, state, *_ = ui
+    client.post("/start", data={"topic": "agent run", "agentic": "on"})
+    assert state.agentic_mode is True
+    # Without the checkbox a later session resets it.
+    client.post("/start", data={"topic": "solo work"})
+    assert state.agentic_mode is False
+
+
+def test_agentic_toggle_route_reapplies_blocklist(ui):
+    client, state, blocker, _ = ui
+    client.post("/start", data={"topic": "t"})
+    n = len(blocker.applied)
+    resp = client.post("/agentic", data={"enabled": "on"})
+    assert resp.status_code in (200, 302)
+    assert state.agentic_mode is True
+    assert len(blocker.applied) == n + 1           # blocklist re-applied
