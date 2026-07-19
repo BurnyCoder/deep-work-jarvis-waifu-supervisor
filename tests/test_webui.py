@@ -76,6 +76,7 @@ def test_index_uses_status_first_semantic_dashboard(ui):
     assert 'id="connection-status"' in html and 'role="status"' in html
     assert 'id="evaluation-history"' in html
     assert 'id="dashboard-announcement"' in html
+    assert 'id="project-detail"' in html
     assert 'aria-live="polite"' in html
     # Placeholders are supplemental; every form field also has a real label.
     assert 'for="session-topic"' in html
@@ -94,6 +95,7 @@ def test_dashboard_assets_implement_safe_non_overlapping_live_updates(ui):
     assert "setTimeout" in script                 # recursive, non-overlap poll
     assert "visibilitychange" in script           # pause while tab is hidden
     assert 'createElement("details")' in script   # expandable evidence
+    assert "allowed_sites" in script              # break allowances stay visible
     assert ".textContent" in script               # safe LLM text rendering
     assert ".innerHTML" not in script              # no HTML injection sink
 
