@@ -151,6 +151,10 @@
     }
 
     setText("project-state", status.active_project || "None");
+    setText(
+      "project-detail",
+      status.active_project ? "Project site allowlist active." : "No project allowlist.",
+    );
     const enforcement = status.enforcement || {};
     setText(
       "blocked-domains",
@@ -378,9 +382,17 @@
 
     if (latestStatus.break) {
       const remaining = Math.max(0, Number(latestStatus.break.remaining_s) - delta);
+      const allowances = [];
+      if (latestStatus.break.allowed_sites?.length) {
+        allowances.push(`sites: ${latestStatus.break.allowed_sites.join(", ")}`);
+      }
+      if (latestStatus.break.allowed_apps?.length) {
+        allowances.push(`apps: ${latestStatus.break.allowed_apps.join(", ")}`);
+      }
+      const allowanceText = allowances.length ? ` · ${allowances.join(" · ")}` : "";
       setText(
         "break-detail",
-        `${titleCase(latestStatus.break.kind)} · ${formatCountdown(remaining)} remaining`,
+        `${titleCase(latestStatus.break.kind)} · ${formatCountdown(remaining)} remaining${allowanceText}`,
       );
     }
 
