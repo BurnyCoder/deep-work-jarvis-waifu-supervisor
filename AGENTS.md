@@ -3,10 +3,10 @@
 ## What this is
 
 A Windows 11 productivity enforcement app: hosts-file website blocking,
-distraction-app killing, periodic AI screen/webcam monitoring with OpenAI
-vision, spoken LLM-generated feedback, ON/OFF/BREAK modes with a daily
-social-media allowance, a confirmation-phrase gate, a local Flask control
-panel, and results storage. Python 3.13, uv-managed local `.venv`.
+distraction-app killing, five-minute rolling AI screen/webcam progress
+monitoring with OpenAI vision, five-minute spoken LLM feedback, ON/OFF/BREAK
+modes with a daily social-media allowance, a confirmation-phrase gate, a local
+Flask control panel, and results storage. Python 3.13, uv-managed local `.venv`.
 
 ## Commands
 
@@ -33,14 +33,14 @@ selection → object wiring → atexit safety → run. All logic lives in
 | `logging_setup.py` | root logger → timestamped file in `logs/` + terminal, utf-8 |
 | `state.py` | thread-safe `SessionState`: modes, breaks, 2h/day social allowance, `effective_blocklist()`, phrase gate |
 | `storage.py` | `results/` writers: capture JPEGs, uncut LLM JSON, session JSONL, `state.json` |
-| `scheduler.py` | enforcer thread (kill sweep + break watchdog) and monitor thread (capture→analyze→speak) |
+| `scheduler.py` | enforcer thread (kill sweep + break watchdog) and five-minute monitor thread (capture→rolling analysis→one utterance) |
 | `blocking/admin.py` | `IsUserAnAdmin` check + `ShellExecuteW("runas")` self-relaunch |
 | `blocking/hosts_blocker.py` | marker-fenced idempotent hosts edits + `ipconfig /flushdns`; `DryRunBlocker` for dev |
 | `blocking/app_killer.py` | psutil sweep killing target process names |
 | `monitoring/screen_capture.py` | mss per-monitor grabs → PIL |
 | `monitoring/webcam_capture.py` | OpenCV `CAP_DSHOW` single frame, non-fatal on failure |
 | `monitoring/stitcher.py` | labeled vertical composite of all captures |
-| `monitoring/analyzer.py` | batch of N captures → `responses.parse` → `ProductivityVerdict`; `AgentActivityChecker` single-capture "is the AI agent busy?" poll for agentic mode |
+| `monitoring/analyzer.py` | newest 1–N captures in a bounded rolling progress window → `responses.parse` → `ProductivityVerdict`; `AgentActivityChecker` single-capture "is the AI agent busy?" poll for agentic mode |
 | `feedback/messages.py` | LLM-written good-luck / nudge / praise / break-ack sentences |
 | `feedback/tts.py` | OpenAI TTS→WAV→winsound or pyttsx3; single `SpeechQueue` worker |
 | `webui/app.py` | Flask factory: `/`, `/start`, `/break`, `/disable`, `/status` |

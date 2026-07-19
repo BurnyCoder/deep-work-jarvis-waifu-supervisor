@@ -28,14 +28,18 @@ class FakeBlocker:
 
 
 class FakeAnalyzer:
-    # Returns a verdict every call (batch size 1 behavior) unless None.
+    # Returns a verdict every call (rolling evaluation behavior) unless None.
     def __init__(self, verdict):
         self.verdict = verdict
         self.captures = []
+        self.resets = 0
 
     def add_capture(self, path, topic):
         self.captures.append((path, topic))
         return self.verdict
+
+    def reset(self):
+        self.resets += 1
 
 
 class FakeAgentChecker:
@@ -132,18 +136,45 @@ def test_capture_verdict_nudge_flows_to_speech(tmp_path):
     assert "thesis" in kwargs["session_context"]
 
 
+def test_productive_verdict_reason_is_spoken_each_tick(tmp_path):
+    verdict = ProductivityVerdict(productive=True, reason="You advanced the test suite.",
+                                  observed="IDE shows three newly passing tests")
+    sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
+    state.start_session("thesis", now=T0)
+    sched._monitor_tick()
+    # Ordinary productive ticks use the already-generated, fresh vision reason
+    # directly, avoiding a second text-model call.
+    assert sched.speech.spoken == ["You advanced the test suite."]
+    assert sched.messages.calls == []
+
+
 def test_praise_after_thirty_productive_minutes(tmp_path):
     verdict = ProductivityVerdict(productive=True, reason="deep in code",
                                   observed="IDE focused, tests green")
     sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
     state.start_session("thesis", now=T0)
-    # Each verdict covers batch_size * interval minutes; with the test's
-    # verdict_minutes=25 default two productive verdicts cross the 30-min bar.
-    sched.verdict_minutes = 25
+    # Rolling windows overlap, so each verdict advances the streak by only the
+    # newest five-minute interval—not the full 25-minute context.
+    sched.verdict_minutes = 5
+    for _ in range(5):
+        sched._monitor_tick()
+    assert sched.speech.spoken == ["deep in code"] * 5
     sched._monitor_tick()
-    assert sched.speech.spoken == []               # 25 min: not yet
+    assert sched.speech.spoken == ["deep in code"] * 5 + ["<praise>"]
+
+
+def test_progress_window_resets_only_for_a_new_session(tmp_path):
+    verdict = ProductivityVerdict(productive=True, reason="progress",
+                                  observed="document grew")
+    sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
+    state.start_session("thesis", now=T0)
     sched._monitor_tick()
-    assert sched.speech.spoken == ["<praise>"]     # 50 min: praise once
+    sched._monitor_tick()
+    assert sched.analyzer.resets == 1              # one reset for first session
+
+    state.start_session("new topic", now=T0 + timedelta(minutes=1))
+    sched._monitor_tick()
+    assert sched.analyzer.resets == 2              # changed session → fresh window
 
 
 def test_agent_watch_unblocks_then_reblocks_on_transitions(tmp_path):
