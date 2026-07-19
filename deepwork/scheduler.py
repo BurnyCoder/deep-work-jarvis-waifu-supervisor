@@ -1,8 +1,8 @@
 # Background scheduler — the app's heartbeat. Two daemon threads:
 #  * enforcer (every KILL_INTERVAL_S): kills distraction apps and acts as the
 #    break watchdog that auto-restores blocking when a break expires.
-#  * monitor (every CAPTURE_INTERVAL_S): capture → stitch → save → batch →
-#    analyze → nudge/praise via TTS.
+#  * monitor (every CAPTURE_INTERVAL_S): capture → stitch → save → rolling
+#    progress analysis → exactly one feedback utterance.
 # Plain threads (not asyncio) because every underlying call is blocking C or
 # subprocess work; loops wait on threading.Event so stop() is instant:
 # https://docs.python.org/3/library/threading.html#threading.Event.wait
@@ -48,9 +48,12 @@ class Scheduler:
         # AI coding agent is still busy and flips blocking on transitions.
         self.agent_checker = agent_checker
         self.agent_check_interval_s = agent_check_interval_s
-        # Minutes of work each verdict certifies = the whole batch window
-        # (batch_size captures x interval); set properly by main.py.
-        self.verdict_minutes = 25
+        # Rolling windows overlap; each new verdict certifies only the newest
+        # interval, never the whole historical context.
+        self.verdict_minutes = max(1, capture_interval_s // 60)
+        # A changed session_start is the dependency-injected session identity
+        # used to prevent captures leaking from one session into the next.
+        self._analysis_session_start = None
         # Event.set() wakes every wait() immediately → instant shutdown.
         self.stop_event = threading.Event()
         self.threads: list[threading.Thread] = []
@@ -73,6 +76,9 @@ class Scheduler:
     def _monitor_tick(self) -> None:
         if not self.state.monitoring_active:       # only ON mode is watched
             return
+        if self._analysis_session_start != self.state.session_start:
+            self.analyzer.reset()                  # new session → fresh history
+            self._analysis_session_start = self.state.session_start
         try:
             image = self.capture_fn()              # all monitors + webcam
         except Exception:                          # capture must never kill the loop
@@ -80,7 +86,7 @@ class Scheduler:
             return
         path = self.store.save_capture(image)
         verdict = self.analyzer.add_capture(path, topic=self.state.topic)
-        if verdict is None:                        # batch still accumulating
+        if verdict is None:                        # defensive fake/legacy support
             return
         # Fold the verdict into the streak; outcome may demand speech.
         self.state.last_verdict = {"productive": verdict.productive,
@@ -95,14 +101,18 @@ class Scheduler:
                                          "productive": verdict.productive,
                                          "reason": verdict.reason,
                                          "observed": verdict.observed})
-        if outcome:                                # "nudge" | "praise"
+        if outcome:                                # milestone nudge or praise
             # The message model gets what was SEEN plus the whole session
             # snapshot, so the spoken line can quote concrete specifics.
             text = self.messages.generate(outcome, topic=self.state.topic,
                                           reason=verdict.reason,
                                           observed=verdict.observed,
                                           session_context=self.state.context_summary())
-            self.speech.say(text)
+        else:
+            # The vision reason is already LLM-generated, fresh, concrete and
+            # speech-ready, so ordinary productive ticks need no second call.
+            text = verdict.reason
+        self.speech.say(text)                      # exactly one line per verdict
 
     def _agent_watch_tick(self) -> None:
         # Agentic engineering mode: while the user's AI agent works on another

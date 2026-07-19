@@ -3,6 +3,8 @@
 # client.responses.parse(...) and the returned .output_parsed, per
 # https://developers.openai.com/api/docs/guides/structured-outputs
 
+import logging
+import pytest
 from PIL import Image
 
 from deepwork.monitoring.analyzer import (
@@ -19,9 +21,11 @@ class FakeResponses:
     def __init__(self, verdict):
         self.verdict = verdict
         self.last_kwargs = None
+        self.calls = []
 
     def parse(self, **kwargs):
         self.last_kwargs = kwargs                  # captured for assertions
+        self.calls.append(kwargs)                  # every rolling evaluation
         verdict = self.verdict                     # close over, not R's self
         # Minimal stand-in for openai.types.responses.ParsedResponse
         class R:
@@ -44,15 +48,23 @@ def test_verdict_requires_observed_description():
     assert "Twitter" in v.observed
     assert "observed" in SYSTEM_PROMPT           # prompt requests the field
     assert "concrete" in SYSTEM_PROMPT.lower()   # ...and concrete specifics
+    assert "progress" in SYSTEM_PROMPT.lower()   # compare oldest → newest
+    assert "full window" in SYSTEM_PROMPT.lower()
+    assert "reading" in SYSTEM_PROMPT.lower()    # static-but-valid work caveat
+    assert "must set productive true" in SYSTEM_PROMPT.lower()
+    assert "panels are not separate chronological captures" in SYSTEM_PROMPT.lower()
+    assert "no chronological comparison is available yet" in SYSTEM_PROMPT.lower()
 
 
-def make_analyzer(tmp_path, verdict=None, batch_size=2):
+def make_analyzer(tmp_path, verdict=None, window_size=5,
+                  reasoning_effort="xhigh"):
     verdict = verdict or ProductivityVerdict(productive=True, reason="deep in code",
                                              observed="IDE with tests running")
     client = FakeClient(verdict)
     store = ResultsStore(tmp_path)
     analyzer = ProductivityAnalyzer(client=client, model="test-model",
-                                    store=store, batch_size=batch_size)
+                                    store=store, window_size=window_size,
+                                    reasoning_effort=reasoning_effort)
     return analyzer, client, store
 
 
@@ -60,22 +72,47 @@ def save_capture(store):
     return store.save_capture(Image.new("RGB", (8, 8), "blue"))
 
 
-def test_batch_accumulates_until_size_then_analyzes(tmp_path):
-    analyzer, client, store = make_analyzer(tmp_path, batch_size=2)
-    # First capture: below batch size → no API call yet.
-    assert analyzer.add_capture(save_capture(store), topic="thesis") is None
-    assert client.responses.last_kwargs is None
-    # Second capture: batch full → one vision call, verdict returned.
-    verdict = analyzer.add_capture(save_capture(store), topic="thesis")
-    assert verdict is not None and verdict.productive
+def save_named_capture(store, name, color):
+    # Distinct filenames and pixels make rolling-window order observable even
+    # when several test images are created inside the same clock second.
+    path = store.root / "captures" / name
+    Image.new("RGB", (8, 8), color).save(path, "JPEG")
+    return path
+
+
+def image_urls(call):
+    # Extract only the image parts from one captured Responses API request.
+    return [part["image_url"] for part in call["input"][-1]["content"]
+            if part["type"] == "input_image"]
+
+
+def test_every_capture_evaluates_available_rolling_window(tmp_path):
+    analyzer, client, store = make_analyzer(tmp_path, window_size=3)
+    paths = [
+        save_named_capture(store, "01.jpg", "red"),
+        save_named_capture(store, "02.jpg", "green"),
+        save_named_capture(store, "03.jpg", "blue"),
+        save_named_capture(store, "04.jpg", "yellow"),
+    ]
+
+    # Warm-up evaluates 1, then 2, then 3 captures; the fourth call remains
+    # bounded at 3 and discards only the oldest capture.
+    assert all(analyzer.add_capture(path, topic="thesis").productive
+               for path in paths)
+    assert [len(image_urls(call)) for call in client.responses.calls] == [1, 2, 3, 3]
+    third_window = image_urls(client.responses.calls[2])
+    fourth_window = image_urls(client.responses.calls[3])
+    assert fourth_window[:2] == third_window[1:]  # oldest was evicted
+    assert fourth_window[-1] not in third_window  # newest was appended
 
 
 def test_request_shape_matches_responses_api(tmp_path):
-    analyzer, client, store = make_analyzer(tmp_path, batch_size=2)
-    analyzer.add_capture(save_capture(store), topic="thesis")
-    analyzer.add_capture(save_capture(store), topic="thesis")
+    analyzer, client, store = make_analyzer(tmp_path, window_size=2)
+    analyzer.add_capture(save_named_capture(store, "01.jpg", "red"), topic="thesis")
+    analyzer.add_capture(save_named_capture(store, "02.jpg", "blue"), topic="thesis")
     kwargs = client.responses.last_kwargs
     assert kwargs["model"] == "test-model"
+    assert kwargs["reasoning"] == {"effort": "xhigh"}
     assert kwargs["text_format"] is ProductivityVerdict
     user_content = kwargs["input"][-1]["content"]
     images = [c for c in user_content if c["type"] == "input_image"]
@@ -87,6 +124,60 @@ def test_request_shape_matches_responses_api(tmp_path):
     # The user's topic is in the text part so the model judges relevance.
     texts = [c for c in user_content if c["type"] == "input_text"]
     assert any("thesis" in t["text"] for t in texts)
+    # A sequence label immediately precedes each stitched image so simultaneous
+    # Monitor 1/Monitor 2/Webcam panels are not mistaken for time progression.
+    assert any("Chronological capture 1 of 2" in t["text"] for t in texts)
+    assert any("Chronological capture 2 of 2" in t["text"] for t in texts)
+    assert all("one stitched image" in t["text"] for t in texts[1:])
+
+
+def test_request_explicitly_marks_warmup_then_full_window(tmp_path):
+    analyzer, client, store = make_analyzer(tmp_path, window_size=3)
+    paths = [
+        save_named_capture(store, "01.jpg", "red"),
+        save_named_capture(store, "02.jpg", "green"),
+        save_named_capture(store, "03.jpg", "blue"),
+    ]
+
+    analyzer.add_capture(paths[0], topic="thesis")
+    first_header = client.responses.calls[-1]["input"][-1]["content"][0]["text"]
+    assert "WARM-UP (1/3)" in first_header
+    assert "productive MUST be true" in first_header
+    assert "unchanged" in first_header
+
+    analyzer.add_capture(paths[1], topic="thesis")
+    second_header = client.responses.calls[-1]["input"][-1]["content"][0]["text"]
+    assert "WARM-UP (2/3)" in second_header
+
+    analyzer.add_capture(paths[2], topic="thesis")
+    full_header = client.responses.calls[-1]["input"][-1]["content"][0]["text"]
+    assert "FULL WINDOW (3/3)" in full_header
+    assert "stalled" in full_header
+
+
+def test_complete_text_prompt_and_structured_output_are_logged(tmp_path, caplog):
+    verdict = ProductivityVerdict(
+        productive=True,
+        reason="The implementation is moving.",
+        observed="VS Code shows the new rolling-window test.",
+    )
+    analyzer, _, store = make_analyzer(
+        tmp_path,
+        verdict=verdict,
+        window_size=2,
+    )
+
+    with caplog.at_level(logging.INFO, logger="deepwork.monitoring.analyzer"):
+        analyzer.add_capture(
+            save_named_capture(store, "01.jpg", "red"),
+            topic="thesis",
+        )
+
+    assert SYSTEM_PROMPT in caplog.text
+    assert "WARM-UP (1/2)" in caplog.text
+    assert "Chronological capture 1 of 1" in caplog.text
+    assert verdict.reason in caplog.text
+    assert verdict.observed in caplog.text
 
 
 def test_agent_activity_checker_request_shape_and_persistence(tmp_path):
@@ -109,11 +200,18 @@ def test_agent_activity_checker_request_shape_and_persistence(tmp_path):
     assert list((tmp_path / "llm").glob("*_agent_watch.json"))
 
 
-def test_exchange_persisted_uncut_and_batch_reset(tmp_path):
-    analyzer, client, store = make_analyzer(tmp_path, batch_size=2)
-    analyzer.add_capture(save_capture(store), topic="t")
-    analyzer.add_capture(save_capture(store), topic="t")
+def test_exchange_persisted_each_tick_and_reset_clears_window(tmp_path):
+    analyzer, client, store = make_analyzer(tmp_path, window_size=2)
+    analyzer.add_capture(save_named_capture(store, "01.jpg", "red"), topic="t")
+    analyzer.add_capture(save_named_capture(store, "02.jpg", "blue"), topic="t")
     saved = list((tmp_path / "llm").glob("*.json"))
-    assert len(saved) == 1                         # full request+response JSON
-    # Batch resets after analysis — next capture starts a fresh batch.
-    assert analyzer.add_capture(save_capture(store), topic="t") is None
+    assert len(saved) == 2                         # one full exchange per tick
+
+    analyzer.reset()
+    analyzer.add_capture(save_named_capture(store, "03.jpg", "green"), topic="t")
+    assert len(image_urls(client.responses.last_kwargs)) == 1
+
+
+def test_window_size_must_be_positive(tmp_path):
+    with pytest.raises(ValueError, match="window_size"):
+        make_analyzer(tmp_path, window_size=0)

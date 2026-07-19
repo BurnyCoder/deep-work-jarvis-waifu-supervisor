@@ -85,13 +85,20 @@ class Config:
     # Frozen dataclass = read-only after construction, safe to share across
     # threads without locks (https://docs.python.org/3/library/dataclasses.html).
     openai_api_key: str
-    vision_model: str = "gpt-5.4-mini"       # cheap vision tier, user decision
-    text_model: str = "gpt-5.4-mini"         # same tier for message generation
+    # GPT-5.6 Sol is OpenAI's flagship tier; xhigh is explicit so upgrades do
+    # not silently inherit a different reasoning default:
+    # https://developers.openai.com/api/docs/guides/latest-model
+    vision_model: str = "gpt-5.6-sol"
+    progress_reasoning_effort: str = "xhigh"
+    # The frequent agent-busy poll and short message generation stay on the
+    # efficient mini tier; only the nuanced progress comparison needs Sol.
+    agent_vision_model: str = "gpt-5.4-mini"
+    text_model: str = "gpt-5.4-mini"
     tts_engine: str = "openai"               # "openai" | "pyttsx3" fallback
     tts_model: str = "gpt-4o-mini-tts"       # https://developers.openai.com/api/docs/guides/text-to-speech
     tts_voice: str = "coral"                 # one of the 13 built-in voices
     capture_interval_s: int = 300            # requirement 3: every 5 minutes
-    batch_size: int = 5                      # captures per vision analysis
+    progress_window_captures: int = 5        # last 25 min at default cadence
     kill_interval_s: int = 3                 # app-kill sweep period (seconds)
     agent_check_interval_s: int = 60         # agentic mode: AI-agent activity poll
     daily_social_cap_min: int = 120          # requirement 5: 2 h/day cap
@@ -112,13 +119,26 @@ def load_config(env: Mapping[str, str]) -> Config:
     return Config(
         openai_api_key=env.get("OPENAI_API_KEY", ""),
         vision_model=env.get("VISION_MODEL", Config.vision_model),
+        progress_reasoning_effort=env.get(
+            "PROGRESS_REASONING_EFFORT",
+            Config.progress_reasoning_effort,
+        ),
+        agent_vision_model=env.get(
+            "AGENT_VISION_MODEL",
+            Config.agent_vision_model,
+        ),
         text_model=env.get("TEXT_MODEL", Config.text_model),
         tts_engine=env.get("TTS_ENGINE", Config.tts_engine),
         tts_model=env.get("TTS_MODEL", Config.tts_model),
         tts_voice=env.get("TTS_VOICE", Config.tts_voice),
         # int() parses the .env string form; defaults are already ints.
         capture_interval_s=int(env.get("CAPTURE_INTERVAL_S", Config.capture_interval_s)),
-        batch_size=int(env.get("BATCH_SIZE", Config.batch_size)),
+        # BATCH_SIZE is a compatibility fallback for existing local .env
+        # files; new installs use the name matching rolling-window semantics.
+        progress_window_captures=int(
+            env.get("PROGRESS_WINDOW_CAPTURES",
+                    env.get("BATCH_SIZE", Config.progress_window_captures))
+        ),
         kill_interval_s=int(env.get("KILL_INTERVAL_S", Config.kill_interval_s)),
         agent_check_interval_s=int(env.get("AGENT_CHECK_INTERVAL_S", Config.agent_check_interval_s)),
         daily_social_cap_min=int(env.get("DAILY_SOCIAL_CAP_MIN", Config.daily_social_cap_min)),

@@ -1,13 +1,15 @@
-# OpenAI vision productivity analyzer (requirement 3). Global context: the
-# monitor thread saves one stitched capture every 5 minutes and feeds its
-# path here; once BATCH_SIZE captures accumulate, ONE vision call judges the
-# whole window and returns {productive, reason} as a typed object.
+# OpenAI vision productivity analyzer (requirement 3). Global context: every
+# five-minute monitor tick appends one stitched capture to a bounded rolling
+# window, then one vision call compares all currently available captures.
+# OpenAI supports multiple images in one Responses content array:
+# https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input
 # Structured outputs via responses.parse:
 # https://developers.openai.com/api/docs/guides/structured-outputs
 # Vision input format: https://developers.openai.com/api/docs/guides/images-vision
 
 import base64
 import logging
+from collections import deque
 from pathlib import Path
 
 # pydantic BaseModel doubles as the JSON schema the API is forced to follow:
@@ -23,15 +25,33 @@ log = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "You are a gentle, encouraging productivity coach. You receive a series of "
     "labeled captures (all monitors plus webcam) taken 5 minutes apart during a "
-    "deep-work session. Judge whether the user is overall working on their "
-    "stated topic across the series. Screens showing code, documents, research "
-    "or tools related to the topic are productive; social media, videos or "
-    "games unrelated to the topic are not. Reply with: productive true/false; "
-    "reason - one short, kind, encouraging sentence explaining why; and "
-    "observed - a concrete, specific description of what the user was actually "
-    "doing across the captures (name the visible apps, sites, window titles "
-    "and content, which monitor they were on, and whether the user was at the "
-    "webcam), written so a coach could quote it back to the user."
+    "deep-work session, ordered oldest to newest. Each chronological capture is "
+    "one stitched image containing simultaneous panels labeled Monitor 1, "
+    "Monitor 2, and Webcam; those panels are not separate chronological captures. "
+    "Use the explicit chronological capture labels as the only timeline. Judge both whether the work "
+    "matches the stated topic and whether meaningful visible progress is being "
+    "made across the series. Compare changes in documents, code, tests, task "
+    "state, research, visible content, and the user's presence. With only one "
+    "capture, judge current task alignment and explicitly avoid claiming a "
+    "trend that cannot yet be seen. If that single capture shows genuine "
+    "task-aligned engagement, you must set productive true; missing comparison "
+    "history alone must never make the verdict false. For exactly one capture, "
+    "the observed field must describe only the current scene and end with "
+    "'No chronological comparison is available yet'; never call it progress, "
+    "no progress, advanced, or stalled. Before the configured full window, "
+    "use visible changes as evidence, but mark productive false only for visible "
+    "distraction, off-topic activity, or clear non-work—not merely because the "
+    "window is incomplete or looks unchanged. Obey the evaluation phase rule "
+    "in the user message. When a full window shows no meaningful "
+    "progress, mark productive false and explain the stall gently. Do not "
+    "penalize plausibly productive reading, thinking, calls, builds, or other "
+    "work whose progress may not visibly change if the captures contain "
+    "evidence of genuine engagement. Social media, unrelated videos, and games "
+    "are unproductive. Reply with: productive true/false; reason - one short, "
+    "kind, speech-ready sentence naming the concrete progress or lack of "
+    "progress; and observed - a concrete comparison of what changed or stayed "
+    "static from oldest to newest (name visible apps, sites, window titles, "
+    "content, monitors, and webcam presence) so a coach can quote it back."
 )
 
 
@@ -85,8 +105,13 @@ class AgentActivityChecker:
                    "input": [{"role": "system", "content": AGENT_WATCH_PROMPT},
                              {"role": "user", "content": user_content}],
                    "text_format": AgentActivityVerdict}
-        log.info("agent-watch request: model=%s capture=%s system=%r",
-                 self.model, path.name, AGENT_WATCH_PROMPT)
+        log.info(
+            "agent-watch request: model=%s capture=%s system=%r user=%r",
+            self.model,
+            path.name,
+            AGENT_WATCH_PROMPT,
+            user_content[0]["text"],
+        )
         response = self.client.responses.parse(**request)
         verdict: AgentActivityVerdict = response.output_parsed
         log.info("agent-watch verdict: working=%s reason=%s",
@@ -111,58 +136,127 @@ def _image_to_data_url(path: Path) -> str:
 
 
 class ProductivityAnalyzer:
-    def __init__(self, client, model: str, store: ResultsStore, batch_size: int = 5):
+    def __init__(self, client, model: str, store: ResultsStore,
+                 window_size: int = 5, reasoning_effort: str = "xhigh"):
         # client injected (real openai.OpenAI in prod, fake in tests).
+        if window_size < 1:
+            raise ValueError("window_size must be at least 1")
         self.client = client
         self.model = model
         self.store = store
-        self.batch_size = batch_size
-        self._batch: list[Path] = []              # capture paths pending analysis
+        self.window_size = window_size
+        self.reasoning_effort = reasoning_effort
+        # A bounded deque automatically evicts the oldest item on append:
+        # https://docs.python.org/3/library/collections.html#collections.deque
+        self._window: deque[Path] = deque(maxlen=window_size)
 
-    def add_capture(self, path: Path, topic: str) -> ProductivityVerdict | None:
-        """Queue one capture; when the batch is full, analyze and return the
-        verdict (None while still accumulating)."""
-        self._batch.append(path)
-        if len(self._batch) < self.batch_size:
-            log.info("capture batched (%d/%d)", len(self._batch), self.batch_size)
-            return None
-        batch, self._batch = self._batch, []      # take & reset atomically
-        return self._analyze(batch, topic)
+    def reset(self) -> None:
+        """Start a fresh progress window for a newly started work session."""
+        self._window.clear()
+        log.info("progress window reset")
 
-    def _analyze(self, batch: list[Path], topic: str) -> ProductivityVerdict:
+    def add_capture(self, path: Path, topic: str) -> ProductivityVerdict:
+        """Append one capture and evaluate every available recent capture."""
+        self._window.append(path)
+        window = list(self._window)                # stable oldest→newest snapshot
+        log.info("progress window updated (%d/%d): %s",
+                 len(window), self.window_size,
+                 ", ".join(capture.name for capture in window))
+        return self._analyze(window, topic)
+
+    def _analyze(self, window: list[Path], topic: str) -> ProductivityVerdict:
         # User content: one text part naming the topic + one input_image per
-        # capture. detail="low" costs a flat 85 tokens per image:
+        # capture. Multiple images in one content array are documented at:
+        # https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input
+        # detail="low" keeps this frequent comparison fast and inexpensive:
         # https://developers.openai.com/api/docs/guides/images-vision#specify-image-input-detail-level
-        user_content = [{"type": "input_text",
-                         "text": f"My deep-work topic: {topic}. "
-                                 f"{len(batch)} captures follow, oldest first."}]
-        user_content += [{"type": "input_image",
-                          "image_url": _image_to_data_url(p),
-                          "detail": "low"} for p in batch]
+        # Put the rule next to the changing window count. This measured prompt
+        # fix prevents an incomplete but unchanged window from being called
+        # stalled, while still allowing visible distraction to be caught.
+        if len(window) < self.window_size:
+            phase_rule = (
+                f"WARM-UP ({len(window)}/{self.window_size}): do not infer a "
+                "stall. If the captures are task-aligned with no visible "
+                "distraction, off-topic activity, or clear non-work, productive "
+                "MUST be true even when the visible scene is unchanged."
+            )
+        else:
+            phase_rule = (
+                f"FULL WINDOW ({len(window)}/{self.window_size}): compare the "
+                "whole window; genuinely unchanged on-topic work may be marked "
+                "stalled, subject to the reading/thinking/build caveat."
+            )
+        capture_summary = (
+            "1 chronological capture follows"
+            if len(window) == 1
+            else f"{len(window)} chronological captures follow"
+        )
+        header = {"type": "input_text",
+                  "text": f"My deep-work topic: {topic}. "
+                          f"{capture_summary}, oldest first. "
+                          f"{phase_rule}"}
+        user_content = [header]
+        stored_content = [header]
+        for index, path in enumerate(window, start=1):
+            # Interleaved labels make the temporal boundary explicit: each
+            # following image is one simultaneous multi-monitor/webcam composite.
+            label = {
+                "type": "input_text",
+                "text": f"Chronological capture {index} of {len(window)}: "
+                        "one stitched image with simultaneous monitor/webcam panels.",
+            }
+            user_content.extend([
+                label,
+                {"type": "input_image",
+                 "image_url": _image_to_data_url(path),
+                 "detail": "low"},
+            ])
+            # Persist the same uncut text prompt while referring to the already
+            # stored JPEG instead of duplicating its large base64 payload.
+            stored_content.extend([
+                label,
+                {"type": "input_image", "file": str(path)},
+            ])
         request = {"model": self.model,
+                   # Responses nests effort under `reasoning`; GPT-5.6 supports
+                   # xhigh for quality-first work:
+                   # https://developers.openai.com/api/docs/guides/latest-model
+                   "reasoning": {"effort": self.reasoning_effort},
                    "input": [{"role": "system", "content": SYSTEM_PROMPT},
                              {"role": "user", "content": user_content}],
                    "text_format": ProductivityVerdict}
-        # Log the full prompt (spec: prompts logged uncut) — image parts are
-        # summarized in the LOG line only; the stored JSON keeps everything.
-        log.info("vision request: model=%s topic=%r captures=%d system=%r",
-                 self.model, topic, len(batch), SYSTEM_PROMPT)
+        # Log every textual prompt part uncut; name image files instead of
+        # dumping base64 bytes because the exact JPEGs are already persisted.
+        prompt_text = [
+            SYSTEM_PROMPT,
+            *(part["text"] for part in user_content
+              if part["type"] == "input_text"),
+        ]
+        log.info(
+            "vision request: model=%s reasoning=%s prompt=%r capture_files=%s",
+            self.model,
+            self.reasoning_effort,
+            prompt_text,
+            ", ".join(path.name for path in window),
+        )
         # responses.parse validates the reply against ProductivityVerdict and
         # retries malformed JSON at the API layer:
         # https://github.com/openai/openai-python#structured-outputs
         response = self.client.responses.parse(**request)
         verdict: ProductivityVerdict = response.output_parsed
-        log.info("vision verdict: productive=%s reason=%s",
-                 verdict.productive, verdict.reason)
+        log.info(
+            "vision output: productive=%s reason=%s observed=%s",
+            verdict.productive,
+            verdict.reason,
+            verdict.observed,
+        )
         # Persist the whole exchange; data URLs are elided from the stored
         # request (the JPEGs already live in results/captures/).
         stored_request = {**request,
                           "text_format": ProductivityVerdict.__name__,
                           "input": [request["input"][0],
                                     {"role": "user",
-                                     "content": [user_content[0]] +
-                                                [{"type": "input_image",
-                                                  "file": str(p)} for p in batch]}]}
+                                     "content": stored_content}]}
         # mode="json" + warnings=False silences pydantic's union-serializer
         # noise when dumping the SDK's ParsedResponse (harmless but loud):
         # https://docs.pydantic.dev/latest/concepts/serialization/#serialization-warnings
