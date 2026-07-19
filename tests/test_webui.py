@@ -1,6 +1,8 @@
 # Tests for deepwork/webui/app.py using Flask's built-in test client —
 # https://flask.palletsprojects.com/en/stable/testing/
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from deepwork.config import CONFIRMATION_PHRASE
@@ -34,8 +36,25 @@ class FakeSpeech:
 def ui(tmp_path):
     state = SessionState(project_allowlists={"ml-research": ["twitter"]})
     blocker, speech = FakeBlocker(), FakeSpeech()
+    runtime_snapshot = lambda now=None: {
+        "running": True,
+        "loops": {
+            "monitor": {
+                "enabled": True,
+                "interval_s": 300,
+                "phase": "waiting",
+                "last_started_at": None,
+                "last_finished_at": None,
+                "next_due_at": None,
+                "next_due_in_s": 120,
+                "last_error": None,
+                "last_result": None,
+            },
+        },
+    }
     app = create_app(state=state, blocker=blocker, store=ResultsStore(tmp_path),
-                     messages=FakeMessages(), speech=speech)
+                     messages=FakeMessages(), speech=speech,
+                     runtime_snapshot=runtime_snapshot)
     app.testing = True
     return app.test_client(), state, blocker, speech
 
@@ -46,6 +65,39 @@ def test_index_lists_previous_topics(ui):
     html = client.get("/").get_data(as_text=True)
     assert "thesis" in html and "emails" in html   # datalist options present
     assert "AI-generated" in html                  # required TTS disclosure
+
+
+def test_index_uses_status_first_semantic_dashboard(ui):
+    client, *_ = ui
+    html = client.get("/").get_data(as_text=True)
+    assert 'href="/static/dashboard.css"' in html
+    assert 'src="/static/dashboard.js"' in html
+    assert html.index('id="live-dashboard"') < html.index('id="controls"')
+    assert 'id="connection-status"' in html and 'role="status"' in html
+    assert 'id="evaluation-history"' in html
+    assert 'id="dashboard-announcement"' in html
+    assert 'id="project-detail"' in html
+    assert 'aria-live="polite"' in html
+    # Placeholders are supplemental; every form field also has a real label.
+    assert 'for="session-topic"' in html
+    assert 'for="break-purpose"' in html
+    assert 'for="disable-phrase"' in html
+
+
+def test_dashboard_assets_implement_safe_non_overlapping_live_updates(ui):
+    client, *_ = ui
+    css = client.get("/static/dashboard.css")
+    js = client.get("/static/dashboard.js")
+    assert css.status_code == 200 and js.status_code == 200
+
+    script = js.get_data(as_text=True)
+    assert 'fetch("/status"' in script
+    assert "setTimeout" in script                 # recursive, non-overlap poll
+    assert "visibilitychange" in script           # pause while tab is hidden
+    assert 'createElement("details")' in script   # expandable evidence
+    assert "allowed_sites" in script              # break allowances stay visible
+    assert ".textContent" in script               # safe LLM text rendering
+    assert ".innerHTML" not in script              # no HTML injection sink
 
 
 def test_start_session_blocks_and_speaks_good_luck(ui):
@@ -90,10 +142,51 @@ def test_break_applies_allowance_and_speaks_ack(ui):
 def test_status_json_shape(ui):
     client, state, *_ = ui
     client.post("/start", data={"topic": "t"})
-    data = client.get("/status").get_json()
+    response = client.get("/status")
+    data = response.get_json()
     assert data["mode"] == "on" and data["topic"] == "t"
     assert "social_minutes_remaining" in data and "last_verdict" in data
     assert "agentic_mode" in data and "agent_busy" in data
+    assert "server_time" in data and "session_elapsed_s" in data
+    assert data["monitoring_active"] is True
+    assert data["evaluation_history"] == []
+    assert data["enforcement"]["blocked_domain_count"] > 0
+    assert data["runtime"]["loops"]["monitor"]["next_due_in_s"] == 120
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_status_returns_current_session_history_newest_first(ui):
+    client, state, *_ = ui
+    client.post("/start", data={"topic": "t"})
+    first = datetime(2026, 7, 20, 9, 0, 0)
+    state.record_verdict(True, 5, reason="first", observed="document v1",
+                         now=first)
+    state.record_verdict(False, 5, reason="second", observed="video open",
+                         now=first + timedelta(minutes=5))
+
+    data = client.get("/status").get_json()
+    assert [item["reason"] for item in data["evaluation_history"]] == [
+        "second",
+        "first",
+    ]
+    assert data["last_verdict"]["observed"] == "video open"
+
+
+def test_status_extends_break_with_countdown_and_allowances(ui):
+    client, state, *_ = ui
+    client.post("/start", data={"topic": "t"})
+    client.post("/break", data={
+        "purpose": "call",
+        "minutes": "10",
+        "kind": "social_media",
+        "allowed_sites": "reddit",
+        "allowed_apps": "discord",
+    })
+
+    br = client.get("/status").get_json()["break"]
+    assert 0 < br["remaining_s"] <= 600
+    assert br["allowed_sites"] == ["reddit"]
+    assert br["allowed_apps"] == ["discord"]
 
 
 def test_start_with_agentic_checkbox_enables_agentic_mode(ui):

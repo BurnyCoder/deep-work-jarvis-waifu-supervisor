@@ -31,9 +31,10 @@ selection → object wiring → atexit safety → run. All logic lives in
 |---|---|
 | `config.py` | `.env` → frozen `Config`; site/app group tables (`SITE_DOMAINS`, `APP_PROCESSES`) |
 | `logging_setup.py` | root logger → timestamped file in `logs/` + terminal, utf-8 |
-| `state.py` | thread-safe `SessionState`: modes, breaks, 2h/day social allowance, `effective_blocklist()`, phrase gate |
+| `state.py` | thread-safe `SessionState`: modes, breaks, allowance, current-session verdict history, enforcement/status snapshots, phrase gate |
 | `storage.py` | `results/` writers: capture JPEGs, uncut LLM JSON, session JSONL, `state.json` |
-| `scheduler.py` | enforcer thread (kill sweep + break watchdog) and five-minute monitor thread (capture→rolling analysis→one utterance) |
+| `scheduler.py` | enforcer/monitor/agent-watch threads; capture→rolling analysis→one utterance; publishes loop results to runtime telemetry |
+| `runtime_status.py` | locked, JSON-safe scheduler cadence/phase/last-next-run/result/error telemetry |
 | `blocking/admin.py` | `IsUserAnAdmin` check + `ShellExecuteW("runas")` self-relaunch |
 | `blocking/hosts_blocker.py` | marker-fenced idempotent hosts edits + `ipconfig /flushdns`; `DryRunBlocker` for dev |
 | `blocking/app_killer.py` | psutil sweep killing target process names |
@@ -43,7 +44,8 @@ selection → object wiring → atexit safety → run. All logic lives in
 | `monitoring/analyzer.py` | newest 1–N captures in a bounded rolling progress window → `responses.parse` → `ProductivityVerdict`; `AgentActivityChecker` single-capture "is the AI agent busy?" poll for agentic mode |
 | `feedback/messages.py` | LLM-written good-luck / nudge / praise / break-ack sentences |
 | `feedback/tts.py` | OpenAI TTS→WAV→winsound or pyttsx3; single `SpeechQueue` worker |
-| `webui/app.py` | Flask factory: `/`, `/start`, `/break`, `/disable`, `/status` |
+| `webui/app.py` + `status.py` | Flask routes and additive no-cache `/status` payload composition |
+| `webui/templates/` + `static/` | status-first responsive dashboard; safe three-second polling and current-session evaluation timeline |
 
 ## Conventions
 
