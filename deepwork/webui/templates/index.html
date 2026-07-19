@@ -1,107 +1,310 @@
-<!-- Deep Work control panel — one page, no build step, vanilla HTML/JS.
-     Served by Flask's render_template from deepwork/webui/app.py.
-     Jinja templating: https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates -->
+<!-- Deep Work control panel: a status-first, dependency-free dashboard.
+     Flask/Jinja renders the form shell; dashboard.js safely fills live data.
+     Template docs: https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <!-- Responsive viewport guidance:
+       https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Deep Work</title>
-  <style>
-    /* Minimal dark panel — enough to be pleasant, no framework. */
-    body { font-family: system-ui, sans-serif; background: #111; color: #eee;
-           max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
-    fieldset { border: 1px solid #444; border-radius: 8px; margin-bottom: 1rem; }
-    input, select, button { font-size: 1rem; padding: .4rem; margin: .2rem 0;
-                            background: #222; color: #eee; border: 1px solid #555;
-                            border-radius: 4px; }
-    button { cursor: pointer; background: #2a6; border: none; }
-    button.danger { background: #a33; }
-    #status { white-space: pre-line; color: #9cf; }
-  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  <script defer src="{{ url_for('static', filename='dashboard.js') }}"></script>
 </head>
 <body>
-  <h1>Deep Work <small id="mode">[{{ mode }}]</small></h1>
-  <!-- OpenAI requires end users to be told that TTS speech is synthetic:
-       https://developers.openai.com/api/docs/guides/text-to-speech -->
-  <p><small>Voice feedback is AI-generated and is not a human voice.</small></p>
+  <div class="page-shell">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Focus control center</p>
+        <h1>Deep Work</h1>
+      </div>
+      <!-- role=status has implicit polite live behavior for connection changes:
+           https://www.w3.org/WAI/WCAG21/Techniques/aria/ARIA22 -->
+      <div id="connection-status" class="connection-badge" data-state="loading"
+           role="status" aria-live="polite">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">Connecting…</span>
+      </div>
+    </header>
 
-  <!-- Requirement 4: topic input with dropdown of previous topics.
-       <datalist> = native combo box:
-       https://developer.mozilla.org/en-US/docs/Web/HTML/Element/datalist -->
-  <fieldset>
-    <legend>Start session (ON)</legend>
-    <form method="post" action="/start">
-      <input name="topic" list="topics" placeholder="What are you working on?" required>
-      <datalist id="topics">
-        {% for t in topics %}<option value="{{ t }}">{% endfor %}
-      </datalist>
-      <select name="project">
-        <option value="">no project allowlist</option>
-        {% for p in projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
-      </select>
-      <!-- Agentic engineering: while your AI coding agent is detected working
-           on any screen, everything unblocks; when it finishes, everything
-           re-blocks and the voice calls you back. -->
-      <label><input type="checkbox" name="agentic">
-        agentic engineering (social allowed while AI agent works)</label>
-      <button>Start</button>
-    </form>
-  </fieldset>
+    <!-- OpenAI requires disclosure that synthesized speech is AI-generated:
+         https://developers.openai.com/api/docs/guides/text-to-speech -->
+    <p class="voice-disclosure">
+      Voice feedback is AI-generated and is not a human voice.
+    </p>
 
-  <fieldset>
-    <legend>Agentic mode toggle (mid-session)</legend>
-    <form method="post" action="/agentic">
-      <label><input type="checkbox" name="enabled"> enabled</label>
-      <button>Apply</button>
-    </form>
-  </fieldset>
+    <main>
+      <!-- Live information comes before controls by the user's chosen hierarchy. -->
+      <section id="live-dashboard" class="dashboard-section"
+               aria-labelledby="live-dashboard-heading" data-mode="{{ mode }}">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Realtime overview</p>
+            <h2 id="live-dashboard-heading">Live session</h2>
+          </div>
+          <span id="mode-pill" class="mode-pill" data-mode="{{ mode }}">
+            {{ mode|upper }}
+          </span>
+        </div>
 
-  <!-- Requirement 5: breaks state purpose + duration + kind; optional
-       comma-separated site/app allowances while everything else stays blocked. -->
-  <fieldset>
-    <legend>Break</legend>
-    <form method="post" action="/break">
-      <input name="purpose" placeholder="What's the break for?" required>
-      <input name="minutes" type="number" min="1" max="240" value="10" required>
-      <select name="kind">
-        <option value="away">away from computer</option>
-        <option value="social_media">social media (draws 2h/day allowance)</option>
-      </select>
-      <input name="allowed_sites" placeholder="allow sites, e.g. reddit,youtube">
-      <input name="allowed_apps" placeholder="allow apps, e.g. discord,steam">
-      <button>Take break</button>
-    </form>
-  </fieldset>
+        <article class="hero-card">
+          <div>
+            <p class="card-label">Working on</p>
+            <p id="current-topic" class="current-topic">No active topic</p>
+          </div>
+          <dl class="hero-facts">
+            <div>
+              <dt>Session time</dt>
+              <dd><time id="session-elapsed">0m</time></dd>
+            </div>
+            <div>
+              <dt>Monitoring</dt>
+              <dd id="monitoring-status">Loading…</dd>
+            </div>
+            <div>
+              <dt>Next evaluation</dt>
+              <dd id="next-evaluation">Loading…</dd>
+            </div>
+          </dl>
+        </article>
 
-  <!-- Requirement 6: disabling demands the exact confirmation phrase. -->
-  <fieldset>
-    <legend>Turn OFF</legend>
-    <form method="post" action="/disable">
-      <input name="phrase" placeholder="Type the confirmation phrase" size="40" required>
-      <button class="danger">Disable everything</button>
-    </form>
-  </fieldset>
+        <div class="metric-grid">
+          <article class="metric-card">
+            <p class="card-label">Productive streak</p>
+            <p id="productive-streak" class="metric-value">0 min</p>
+            <p class="metric-note">Progress toward the next 30-minute praise.</p>
+          </article>
 
-  <h2>Status</h2>
-  <div id="status">loading…</div>
+          <article class="metric-card">
+            <p class="card-label">Social allowance</p>
+            <p id="social-remaining" class="metric-value">—</p>
+            <!-- Native progress supplies accessible progressbar semantics:
+                 https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/progress -->
+            <progress id="social-progress" max="120" value="0"
+                      aria-label="Social allowance remaining"></progress>
+          </article>
 
-  <script>
-    // Poll /status every 3 s — fetch API:
-    // https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
-    async function refresh() {
-      const s = await (await fetch("/status")).json();
-      document.getElementById("mode").textContent = "[" + s.mode + "]";
-      document.getElementById("status").textContent =
-        "topic: " + (s.topic || "—") +
-        "\nproductive streak: " + s.productive_streak_min + " min" +
-        "\nsocial allowance left today: " + s.social_minutes_remaining + " min" +
-        (s.agentic_mode ? "\nagentic mode: " + (s.agent_busy ?
-          "agent working — everything unblocked" : "agent idle — blocking active") : "") +
-        (s.break ? "\nbreak: " + s.break.purpose + " (" + s.break.kind + ") until " + s.break.until : "") +
-        (s.last_verdict ? "\nlast verdict: " + (s.last_verdict.productive ? "productive" : "not productive")
-                          + " — " + s.last_verdict.reason : "");
-    }
-    refresh(); setInterval(refresh, 3000);
-  </script>
+          <article class="metric-card">
+            <p class="card-label">Evaluations</p>
+            <p id="evaluation-count" class="metric-value">0</p>
+            <p id="evaluation-summary" class="metric-note">
+              Waiting for the first evaluation.
+            </p>
+          </article>
+
+          <article class="metric-card">
+            <p class="card-label">Last synced</p>
+            <p id="last-updated" class="metric-value metric-value-small">—</p>
+            <p class="metric-note">Dashboard data refreshes every three seconds.</p>
+          </article>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="panel history-panel" aria-labelledby="history-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Current session</p>
+                <h3 id="history-heading">Productivity evaluation history</h3>
+              </div>
+              <span id="history-total" class="count-badge">0 checks</span>
+            </div>
+            <p id="history-empty" class="empty-state">
+              Your first evaluation will appear here after the monitor runs.
+            </p>
+            <ol id="evaluation-history" class="timeline"
+                aria-label="Productivity evaluations, newest first"></ol>
+          </section>
+
+          <div class="dashboard-side">
+            <section class="panel" aria-labelledby="conditions-heading">
+              <div class="panel-heading">
+                <h3 id="conditions-heading">Current conditions</h3>
+              </div>
+              <dl class="condition-list">
+                <div>
+                  <dt>Break</dt>
+                  <dd>
+                    <strong id="break-state">None</strong>
+                    <span id="break-detail">No active break.</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Agentic mode</dt>
+                  <dd>
+                    <strong id="agent-state">Off</strong>
+                    <span id="agent-detail">Standard focus monitoring.</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Project</dt>
+                  <dd>
+                    <strong id="project-state">None</strong>
+                    <span>Active allowlist.</span>
+                  </dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="panel" aria-labelledby="enforcement-heading">
+              <div class="panel-heading">
+                <h3 id="enforcement-heading">Enforcement</h3>
+              </div>
+              <div class="enforcement-grid">
+                <article>
+                  <span class="operation-icon" aria-hidden="true">WEB</span>
+                  <p id="blocked-domains" class="operation-value">—</p>
+                  <p class="operation-label">domains blocked</p>
+                </article>
+                <article>
+                  <span class="operation-icon" aria-hidden="true">APP</span>
+                  <p id="watched-processes" class="operation-value">—</p>
+                  <p class="operation-label">process targets</p>
+                </article>
+              </div>
+            </section>
+
+            <section class="panel" aria-labelledby="operations-heading">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Scheduler health</p>
+                  <h3 id="operations-heading">Background operations</h3>
+                </div>
+                <span id="scheduler-state" class="count-badge">Loading</span>
+              </div>
+              <div id="runtime-loops" class="runtime-list"></div>
+            </section>
+          </div>
+        </div>
+
+        <!-- Only concise new-verdict messages are announced, preventing every
+             three-second card refresh from overwhelming screen-reader users. -->
+        <p id="dashboard-announcement" class="visually-hidden"
+           role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="controls" class="controls-section" aria-labelledby="controls-heading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Actions</p>
+            <h2 id="controls-heading">Session controls</h2>
+          </div>
+        </div>
+
+        <div class="controls-grid">
+          <section class="control-card control-card-wide" aria-labelledby="start-heading">
+            <h3 id="start-heading">Start a focused session</h3>
+            <form method="post" action="/start" class="form-grid">
+              <!-- Native datalist supplies the dependency-free topic history:
+                   https://developer.mozilla.org/en-US/docs/Web/HTML/Element/datalist -->
+              <div class="field field-wide">
+                <label for="session-topic">What are you working on?</label>
+                <input id="session-topic" name="topic" list="topics"
+                       placeholder="Write thesis chapter" required>
+                <datalist id="topics">
+                  {% for t in topics %}<option value="{{ t }}">{% endfor %}
+                </datalist>
+              </div>
+
+              <div class="field">
+                <label for="session-project">Project allowlist</label>
+                <select id="session-project" name="project">
+                  <option value="">No project allowlist</option>
+                  {% for p in projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+                </select>
+              </div>
+
+              <label class="checkbox-field">
+                <input type="checkbox" name="agentic">
+                <span>
+                  <strong>Agentic engineering</strong>
+                  <small>Allow social sites while an AI coding agent works.</small>
+                </span>
+              </label>
+
+              <button type="submit" class="primary-button field-wide">
+                Start session
+              </button>
+            </form>
+          </section>
+
+          <section class="control-card" aria-labelledby="agentic-heading">
+            <h3 id="agentic-heading">Agentic mode</h3>
+            <p class="control-description">
+              Change agent monitoring without restarting the current session.
+            </p>
+            <form method="post" action="/agentic" class="stack-form">
+              <label class="checkbox-field">
+                <input id="agentic-enabled" type="checkbox" name="enabled">
+                <span><strong>Enable agent watcher</strong></span>
+              </label>
+              <button type="submit" class="secondary-button">Apply setting</button>
+            </form>
+          </section>
+
+          <section class="control-card control-card-wide" aria-labelledby="break-heading">
+            <h3 id="break-heading">Take a timed break</h3>
+            <form method="post" action="/break" class="form-grid">
+              <div class="field field-wide">
+                <label for="break-purpose">What is the break for?</label>
+                <input id="break-purpose" name="purpose"
+                       placeholder="Coffee and stretch" required>
+              </div>
+
+              <div class="field">
+                <label for="break-minutes">Duration</label>
+                <div class="input-suffix">
+                  <input id="break-minutes" name="minutes" type="number"
+                         min="1" max="240" value="10" required>
+                  <span>minutes</span>
+                </div>
+              </div>
+
+              <div class="field">
+                <label for="break-kind">Break type</label>
+                <select id="break-kind" name="kind">
+                  <option value="away">Away from computer</option>
+                  <option value="social_media">Social media allowance</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="allowed-sites">Allowed site groups</label>
+                <input id="allowed-sites" name="allowed_sites"
+                       placeholder="reddit, youtube">
+              </div>
+
+              <div class="field">
+                <label for="allowed-apps">Allowed app groups</label>
+                <input id="allowed-apps" name="allowed_apps"
+                       placeholder="discord, steam">
+              </div>
+
+              <button type="submit" class="secondary-button field-wide">
+                Start break
+              </button>
+            </form>
+          </section>
+
+          <section class="control-card danger-card" aria-labelledby="disable-heading">
+            <h3 id="disable-heading">Turn enforcement off</h3>
+            <p class="control-description">
+              The exact confirmation phrase is required.
+            </p>
+            <form method="post" action="/disable" class="stack-form">
+              <div class="field">
+                <label for="disable-phrase">Confirmation phrase</label>
+                <input id="disable-phrase" name="phrase"
+                       placeholder="Type the full phrase" autocomplete="off" required>
+              </div>
+              <button type="submit" class="danger-button">
+                Disable everything
+              </button>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
 </body>
 </html>
