@@ -67,6 +67,37 @@ def test_index_lists_previous_topics(ui):
     assert "AI-generated" in html                  # required TTS disclosure
 
 
+def test_index_uses_status_first_semantic_dashboard(ui):
+    client, *_ = ui
+    html = client.get("/").get_data(as_text=True)
+    assert 'href="/static/dashboard.css"' in html
+    assert 'src="/static/dashboard.js"' in html
+    assert html.index('id="live-dashboard"') < html.index('id="controls"')
+    assert 'id="connection-status"' in html and 'role="status"' in html
+    assert 'id="evaluation-history"' in html
+    assert 'id="dashboard-announcement"' in html
+    assert 'aria-live="polite"' in html
+    # Placeholders are supplemental; every form field also has a real label.
+    assert 'for="session-topic"' in html
+    assert 'for="break-purpose"' in html
+    assert 'for="disable-phrase"' in html
+
+
+def test_dashboard_assets_implement_safe_non_overlapping_live_updates(ui):
+    client, *_ = ui
+    css = client.get("/static/dashboard.css")
+    js = client.get("/static/dashboard.js")
+    assert css.status_code == 200 and js.status_code == 200
+
+    script = js.get_data(as_text=True)
+    assert 'fetch("/status"' in script
+    assert "setTimeout" in script                 # recursive, non-overlap poll
+    assert "visibilitychange" in script           # pause while tab is hidden
+    assert 'createElement("details")' in script   # expandable evidence
+    assert ".textContent" in script               # safe LLM text rendering
+    assert ".innerHTML" not in script              # no HTML injection sink
+
+
 def test_start_session_blocks_and_speaks_good_luck(ui):
     client, state, blocker, speech = ui
     resp = client.post("/start", data={"topic": "write thesis"})
