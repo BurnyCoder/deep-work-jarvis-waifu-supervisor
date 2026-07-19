@@ -19,6 +19,11 @@ from deepwork.config import (
     all_blocked_domains,
     expand_www,
 )
+from deepwork.site_access import (
+    normalize_site_keys,
+    resolve_work_allowed_sites,
+    site_labels,
+)
 
 
 class Mode(enum.Enum):
@@ -43,13 +48,18 @@ class SessionState:
     # Behavior knobs are injected so tests construct states in one line.
     daily_social_cap_min: int = 120
     # project name -> list of SITE_DOMAINS keys that project may use while ON
-    project_allowlists: dict[str, list[str]] = field(default_factory=dict)
+    project_allowlists: dict[str, list[str] | tuple[str, ...]] = field(
+        default_factory=dict
+    )
 
     # --- runtime fields (not constructor-tuned) ---
     mode: Mode = Mode.OFF
     topic: str = ""
     previous_topics: list[str] = field(default_factory=list)
     active_project: str | None = None
+    # One-off website groups chosen for the current task. Unlike project
+    # presets, these runtime choices deliberately do not survive a restart.
+    task_allowed_sites: tuple[str, ...] = ()
     current_break: BreakInfo | None = None
     # date-iso -> minutes of social break reserved that day; keying by date
     # string makes the midnight rollover automatic and JSON-friendly.
@@ -74,8 +84,25 @@ class SessionState:
 
     # ---------- mode transitions ----------
 
-    def start_session(self, topic: str, now: datetime | None = None) -> None:
+    def start_session(
+        self,
+        topic: str,
+        now: datetime | None = None,
+        *,
+        allowed_sites: list[str] | tuple[str, ...] | None = None,
+        project: str | None = None,
+        agentic: bool = False,
+    ) -> None:
         # Requirement 4: topic entered per session, history feeds the dropdown.
+        # Validate every option before touching live state, so a forged form
+        # value cannot leave a half-started session behind.
+        selected_sites = normalize_site_keys(allowed_sites or ())
+        project_name = project.strip() if project else None
+        resolve_work_allowed_sites(
+            selected_sites,
+            project_name,
+            self.project_allowlists,
+        )
         with self._lock:
             self.mode = Mode.ON
             self.session_start = now or datetime.now()
@@ -86,8 +113,9 @@ class SessionState:
             self.last_verdict = None
             self.evaluation_history.clear()
             self.current_break = None
-            self.active_project = None
-            self.agentic_mode = False
+            self.active_project = project_name
+            self.task_allowed_sites = selected_sites
+            self.agentic_mode = agentic
             self.agent_busy = False
             # Dedup then prepend → most-recent-first history.
             if topic in self.previous_topics:
@@ -159,13 +187,22 @@ class SessionState:
     # ---------- effective enforcement views ----------
 
     def _allowed_site_keys(self) -> set[str]:
-        # Union of what the current break and the active project unlock.
-        allowed: set[str] = set()
+        # Union of task/preset access and what the current break unlocks.
+        allowed = set(self.work_allowed_sites)
         if self.mode is Mode.BREAK and self.current_break:
             allowed |= set(self.current_break.allowed_sites)
-        if self.active_project:
-            allowed |= set(self.project_allowlists.get(self.active_project, []))
         return allowed
+
+    @property
+    def work_allowed_sites(self) -> tuple[str, ...]:
+        """Return the ordered union of one-off and saved-preset task access."""
+
+        with self._lock:
+            return resolve_work_allowed_sites(
+                self.task_allowed_sites,
+                self.active_project,
+                self.project_allowlists,
+            )
 
     def effective_blocklist(self) -> tuple[str, ...]:
         # Full blocklist minus every domain variant of the allowed site keys.
@@ -206,8 +243,14 @@ class SessionState:
     def set_project(self, name: str | None) -> None:
         # Requirement 5: a "productive project" may allowlist specific
         # social sites while enforcement stays ON for everything else.
+        project_name = name.strip() if name else None
         with self._lock:
-            self.active_project = name
+            resolve_work_allowed_sites(
+                self.task_allowed_sites,
+                project_name,
+                self.project_allowlists,
+            )
+            self.active_project = project_name
 
     # ---------- monitoring hooks ----------
 
@@ -277,7 +320,12 @@ class SessionState:
                 f"social allowance left today: {self.social_minutes_remaining(now)} min",
             ]
             if self.active_project:
-                lines.append(f"active project allowlist: {self.active_project}")
+                lines.append(f"saved project preset: {self.active_project}")
+            if self.work_allowed_sites:
+                lines.append(
+                    "work-required websites allowed: "
+                    + ", ".join(self.work_allowed_sites)
+                )
             if self.agentic_mode:
                 lines.append("agentic mode: on, AI agent currently "
                              + ("working" if self.agent_busy else "idle"))
@@ -321,6 +369,7 @@ class SessionState:
                 self.effective_kill_processes() if enforcement_on else ()
             )
             br = self.current_break
+            work_sites = self.work_allowed_sites
             break_payload = (
                 {
                     "purpose": br.purpose,
@@ -343,6 +392,12 @@ class SessionState:
                 "mode": self.mode.value,
                 "topic": self.topic,
                 "active_project": self.active_project,
+                "work_access": {
+                    "project": self.active_project,
+                    "selected_sites": list(self.task_allowed_sites),
+                    "allowed_sites": list(work_sites),
+                    "allowed_site_labels": list(site_labels(work_sites)),
+                },
                 "session_started_at": (
                     self.session_start.isoformat() if self.session_start else None
                 ),

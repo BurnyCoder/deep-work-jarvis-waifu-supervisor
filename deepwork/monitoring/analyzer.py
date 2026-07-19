@@ -46,8 +46,11 @@ SYSTEM_PROMPT = (
     "progress, mark productive false and explain the stall gently. Do not "
     "penalize plausibly productive reading, thinking, calls, builds, or other "
     "work whose progress may not visibly change if the captures contain "
-    "evidence of genuine engagement. Social media, unrelated videos, and games "
-    "are unproductive. Reply with: productive true/false; reason - one short, "
+    "evidence of genuine engagement. Social media and video are unproductive "
+    "unless the user message explicitly lists that website group as required "
+    "for the task and the visible activity serves the stated topic; unrelated "
+    "feeds, videos, and games remain unproductive. Reply with: productive "
+    "true/false; reason - one short, "
     "kind, speech-ready sentence naming the concrete progress or lack of "
     "progress; and observed - a concrete comparison of what changed or stayed "
     "static from oldest to newest (name visible apps, sites, window titles, "
@@ -155,16 +158,26 @@ class ProductivityAnalyzer:
         self._window.clear()
         log.info("progress window reset")
 
-    def add_capture(self, path: Path, topic: str) -> ProductivityVerdict:
+    def add_capture(
+        self,
+        path: Path,
+        topic: str,
+        allowed_sites: tuple[str, ...] = (),
+    ) -> ProductivityVerdict:
         """Append one capture and evaluate every available recent capture."""
         self._window.append(path)
         window = list(self._window)                # stable oldest→newest snapshot
         log.info("progress window updated (%d/%d): %s",
                  len(window), self.window_size,
                  ", ".join(capture.name for capture in window))
-        return self._analyze(window, topic)
+        return self._analyze(window, topic, allowed_sites)
 
-    def _analyze(self, window: list[Path], topic: str) -> ProductivityVerdict:
+    def _analyze(
+        self,
+        window: list[Path],
+        topic: str,
+        allowed_sites: tuple[str, ...],
+    ) -> ProductivityVerdict:
         # User content: one text part naming the topic + one input_image per
         # capture. Multiple images in one content array are documented at:
         # https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input
@@ -191,8 +204,23 @@ class ProductivityAnalyzer:
             if len(window) == 1
             else f"{len(window)} chronological captures follow"
         )
+        if allowed_sites:
+            access_rule = (
+                "Work-required website groups explicitly allowed for this "
+                f"task: {', '.join(allowed_sites)}. Seeing an allowed site "
+                "does not automatically make the activity productive; it must "
+                "show activity that visibly serves the stated topic. Unrelated "
+                "scrolling remains "
+                "unproductive."
+            )
+        else:
+            access_rule = (
+                "No distracting website groups are explicitly allowed for "
+                "this task."
+            )
         header = {"type": "input_text",
                   "text": f"My deep-work topic: {topic}. "
+                          f"{access_rule} "
                           f"{capture_summary}, oldest first. "
                           f"{phase_rule}"}
         user_content = [header]

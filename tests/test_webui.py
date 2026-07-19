@@ -1,11 +1,13 @@
 # Tests for deepwork/webui/app.py using Flask's built-in test client —
 # https://flask.palletsprojects.com/en/stable/testing/
 
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-from deepwork.config import CONFIRMATION_PHRASE
+from deepwork.config import CONFIRMATION_PHRASE, SITE_DOMAINS
 from deepwork.state import Mode, SessionState
 from deepwork.storage import ResultsStore
 from deepwork.webui.app import create_app
@@ -56,6 +58,7 @@ def ui(tmp_path):
                      messages=FakeMessages(), speech=speech,
                      runtime_snapshot=runtime_snapshot)
     app.testing = True
+    app.config["TEST_RESULTS_ROOT"] = str(tmp_path)
     return app.test_client(), state, blocker, speech
 
 
@@ -65,6 +68,7 @@ def test_index_lists_previous_topics(ui):
     html = client.get("/").get_data(as_text=True)
     assert "thesis" in html and "emails" in html   # datalist options present
     assert "AI-generated" in html                  # required TTS disclosure
+    assert "ml-research" in html and "X / Twitter" in html
 
 
 def test_index_uses_status_first_semantic_dashboard(ui):
@@ -82,6 +86,9 @@ def test_index_uses_status_first_semantic_dashboard(ui):
     assert 'for="session-topic"' in html
     assert 'for="break-purpose"' in html
     assert 'for="disable-phrase"' in html
+    assert "<fieldset" in html and "Websites needed for this task" in html
+    assert all(f'value="{site}"' in html for site in SITE_DOMAINS)
+    assert "X / Twitter" in html and "Hacker News" in html
 
 
 def test_dashboard_assets_implement_safe_non_overlapping_live_updates(ui):
@@ -96,6 +103,8 @@ def test_dashboard_assets_implement_safe_non_overlapping_live_updates(ui):
     assert "visibilitychange" in script           # pause while tab is hidden
     assert 'createElement("details")' in script   # expandable evidence
     assert "allowed_sites" in script              # break allowances stay visible
+    assert "work_access" in script                # task allowances stay visible
+    assert "Last session task access" in script   # OFF state is not misleading
     assert ".textContent" in script               # safe LLM text rendering
     assert ".innerHTML" not in script              # no HTML injection sink
 
@@ -107,6 +116,70 @@ def test_start_session_blocks_and_speaks_good_luck(ui):
     assert state.mode is Mode.ON and state.topic == "write thesis"
     assert blocker.applied and "reddit.com" in blocker.applied[-1]
     assert speech.spoken == ["<good_luck>"]        # requirement 4 good-luck
+
+
+def test_start_session_unblocks_selected_task_sites_only(ui):
+    client, state, blocker, _ = ui
+    response = client.post(
+        "/start",
+        data={
+            "topic": "publish launch update",
+            "allowed_sites": ["twitter", "linkedin"],
+        },
+    )
+    assert response.status_code in (200, 302)
+    assert state.work_allowed_sites == ("twitter", "linkedin")
+    assert "x.com" not in blocker.applied[-1]
+    assert "linkedin.com" not in blocker.applied[-1]
+    assert "reddit.com" in blocker.applied[-1]
+    assert state.social_minutes_remaining() == 120
+
+
+def test_start_session_adds_project_preset_to_one_off_sites(ui):
+    client, state, blocker, _ = ui
+    response = client.post(
+        "/start",
+        data={
+            "topic": "share model results",
+            "project": "ml-research",
+            "allowed_sites": ["linkedin"],
+        },
+    )
+    assert response.status_code in (200, 302)
+    assert state.work_allowed_sites == ("twitter", "linkedin")
+    assert "x.com" not in blocker.applied[-1]
+    assert "linkedin.com" not in blocker.applied[-1]
+
+
+def test_start_rejects_forged_site_without_state_or_hosts_side_effects(ui):
+    client, state, blocker, speech = ui
+    response = client.post(
+        "/start",
+        data={"topic": "forged", "allowed_sites": ["unknown"]},
+    )
+    assert response.status_code == 400
+    assert state.mode is Mode.OFF and state.topic == ""
+    assert blocker.applied == [] and speech.spoken == []
+
+
+def test_start_event_records_task_access(ui):
+    client, *_ = ui
+    client.post(
+        "/start",
+        data={
+            "topic": "publish launch update",
+            "project": "ml-research",
+            "allowed_sites": ["linkedin"],
+            "agentic": "on",
+        },
+    )
+    root = client.application.config["TEST_RESULTS_ROOT"]
+    event_file = next((Path(root) / "sessions").glob("*.jsonl"))
+    event = json.loads(event_file.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["selected_sites"] == ["linkedin"]
+    assert event["allowed_sites"] == ["twitter", "linkedin"]
+    assert event["project"] == "ml-research"
+    assert event["agentic"] is True
 
 
 def test_disable_needs_exact_phrase(ui):
@@ -150,6 +223,12 @@ def test_status_json_shape(ui):
     assert "server_time" in data and "session_elapsed_s" in data
     assert data["monitoring_active"] is True
     assert data["evaluation_history"] == []
+    assert data["work_access"] == {
+        "project": None,
+        "selected_sites": [],
+        "allowed_sites": [],
+        "allowed_site_labels": [],
+    }
     assert data["enforcement"]["blocked_domain_count"] > 0
     assert data["runtime"]["loops"]["monitor"]["next_due_in_s"] == 120
     assert response.headers["Cache-Control"] == "no-store"

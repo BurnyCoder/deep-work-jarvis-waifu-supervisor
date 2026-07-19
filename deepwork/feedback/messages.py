@@ -49,10 +49,11 @@ _TEMPLATES = {
     ),
     "agent_done": (
         "A user's AI coding agent has just FINISHED and is waiting for their "
-        "review — the monitor said: {reason!r}. Social sites were just "
-        "re-blocked. Write one short, upbeat spoken sentence telling them "
-        "the agent is done and it's time to come back and review its work. "
-        "No emojis, it will be read aloud."
+        "review — the monitor said: {reason!r}. Non-task websites were just "
+        "re-blocked; any websites explicitly required for the task remain "
+        "available. Write one short, upbeat spoken sentence telling them the "
+        "agent is done and it's time to come back and review its work. No "
+        "emojis, it will be read aloud."
     ),
     "break_ack": (
         "A user is taking a {minutes}-minute break for: {purpose!r}. Write one "
