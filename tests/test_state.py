@@ -102,10 +102,61 @@ def test_recent_verdicts_window_stores_observed_and_caps_at_five():
     s = make_state()
     s.start_session("thesis", now=T0)
     for i in range(7):                             # 7 verdicts → keep last 5
-        s.record_verdict(True, minutes=5, observed=f"screen shows doc v{i}")
+        s.record_verdict(True, minutes=5, observed=f"screen shows doc v{i}",
+                         now=T0 + timedelta(minutes=i * 5))
+    # The dashboard keeps the complete current-session history while TTS
+    # context remains intentionally bounded to its newest five evaluations.
+    assert len(s.evaluation_history) == 7
     assert len(s.recent_verdicts) == 5
     assert s.recent_verdicts[-1]["observed"] == "screen shows doc v6"
     assert s.recent_verdicts[0]["observed"] == "screen shows doc v2"
+    assert s.evaluation_history[0]["ts"] == T0.isoformat()
+
+
+def test_new_session_resets_visible_history_but_disable_preserves_last_session():
+    s = make_state()
+    s.start_session("first", now=T0)
+    s.record_verdict(True, minutes=5, reason="made progress", now=T0)
+    assert len(s.evaluation_history) == 1
+
+    # OFF is still a useful review state, so the completed session remains
+    # visible until the user explicitly starts a new one.
+    assert s.try_disable(CONFIRMATION_PHRASE, now=T0 + timedelta(minutes=7))
+    assert s.last_verdict["reason"] == "made progress"
+    assert len(s.evaluation_history) == 1
+
+    s.start_session("second", now=T0 + timedelta(minutes=10))
+    assert s.last_verdict is None
+    assert s.evaluation_history == []
+    assert s.recent_verdicts == []
+
+
+def test_status_snapshot_is_consistent_and_reports_live_enforcement():
+    s = make_state()
+    off = s.status_snapshot(now=T0)
+    assert off["mode"] == "off"
+    assert off["session_elapsed_s"] == 0
+    assert off["monitoring_pause_reason"] == "Enforcement is off."
+    assert off["enforcement"] == {
+        "hosts_active": False,
+        "blocked_domain_count": 0,
+        "app_killer_active": False,
+        "target_process_count": 0,
+    }
+
+    s.start_session("thesis", now=T0)
+    s.record_verdict(False, minutes=5, reason="stalled",
+                     observed="editor unchanged",
+                     now=T0 + timedelta(minutes=5))
+    on = s.status_snapshot(now=T0 + timedelta(minutes=6))
+    assert on["session_started_at"] == T0.isoformat()
+    assert on["session_elapsed_s"] == 360
+    assert on["monitoring_active"] is True
+    assert on["monitoring_pause_reason"] is None
+    assert on["social_minutes_cap"] == 120
+    assert on["last_verdict"] == on["evaluation_history"][0]
+    assert on["enforcement"]["blocked_domain_count"] > 0
+    assert on["enforcement"]["target_process_count"] > 0
 
 
 def test_context_summary_grounds_all_the_facts():

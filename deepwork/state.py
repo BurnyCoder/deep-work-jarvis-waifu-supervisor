@@ -9,7 +9,7 @@
 import enum
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Config owns the domain/app tables; state only computes "effective" views.
 from deepwork.config import (
@@ -56,10 +56,11 @@ class SessionState:
     social_used_by_date: dict[str, int] = field(default_factory=dict)
     productive_streak_min: int = 0                # consecutive productive mins
     last_verdict: dict | None = None              # latest analyzer result
-    # Rolling window of the last few verdicts (ts/productive/reason/observed)
-    # — the raw material context_summary() feeds to every TTS message prompt.
-    recent_verdicts: list[dict] = field(default_factory=list)
+    # Complete in-memory verdict history for the current session. The web UI
+    # shows all entries; context_summary() independently slices the newest 5.
+    evaluation_history: list[dict] = field(default_factory=list)
     session_start: datetime | None = None         # when ON began (for records)
+    session_end: datetime | None = None           # freezes elapsed time after OFF
     # Agentic engineering mode: while an AI coding agent is detected working
     # on another screen, the whole blocklist opens; when it finishes,
     # everything re-blocks (user is "waiting", not slacking).
@@ -78,14 +79,23 @@ class SessionState:
         with self._lock:
             self.mode = Mode.ON
             self.session_start = now or datetime.now()
+            self.session_end = None
             self.topic = topic
+            # A new session is the exact boundary selected for dashboard
+            # history; OFF and BREAK deliberately keep the prior entries.
+            self.last_verdict = None
+            self.evaluation_history.clear()
+            self.current_break = None
+            self.active_project = None
+            self.agentic_mode = False
+            self.agent_busy = False
             # Dedup then prepend → most-recent-first history.
             if topic in self.previous_topics:
                 self.previous_topics.remove(topic)
             self.previous_topics.insert(0, topic)
             self.productive_streak_min = 0
 
-    def try_disable(self, phrase: str) -> bool:
+    def try_disable(self, phrase: str, now: datetime | None = None) -> bool:
         # Requirement 6: only the EXACT phrase flips everything OFF —
         # comparison is deliberately case- and whitespace-sensitive friction.
         with self._lock:
@@ -93,6 +103,7 @@ class SessionState:
                 return False
             self.mode = Mode.OFF
             self.current_break = None
+            self.session_end = now or datetime.now()
             return True
 
     # ---------- breaks & allowance ----------
@@ -123,8 +134,8 @@ class SessionState:
                 # double-spend the allowance.
                 key = now.date().isoformat()
                 self.social_used_by_date[key] = self.social_used_by_date.get(key, 0) + minutes
-            # timedelta arithmetic: https://docs.python.org/3/library/datetime.html#timedelta-objects
-            from datetime import timedelta
+            # timedelta arithmetic:
+            # https://docs.python.org/3/library/datetime.html#timedelta-objects
             self.current_break = BreakInfo(
                 purpose=purpose, kind=kind,
                 end_time=now + timedelta(minutes=minutes),
@@ -210,6 +221,14 @@ class SessionState:
         # moment the agent goes idle.
         return self.mode is Mode.ON and not (self.agentic_mode and self.agent_busy)
 
+    @property
+    def recent_verdicts(self) -> list[dict]:
+        """Return the bounded five-entry context window used by feedback."""
+
+        with self._lock:
+            # Return copies so a prompt builder cannot mutate shared state.
+            return [dict(item) for item in self.evaluation_history[-5:]]
+
     def record_verdict(self, productive: bool, minutes: int,
                        observed: str = "", reason: str = "",
                        now: datetime | None = None) -> str | None:
@@ -218,22 +237,31 @@ class SessionState:
         Requirement 4: nudge whenever unproductive; praise once per 30
         consecutive productive minutes (streak then restarts so a long
         session earns praise again every 30 min). Every verdict also joins
-        the rolling recent_verdicts window (last 5) for TTS grounding.
+        the current-session evaluation history for dashboard and TTS grounding.
         """
         with self._lock:
-            self.recent_verdicts.append({
-                "ts": (now or datetime.now()).strftime("%H:%M"),
-                "productive": productive, "reason": reason, "observed": observed,
-            })
-            del self.recent_verdicts[:-5]          # keep only the last 5
+            timestamp = now or datetime.now()
+            outcome = None
             if not productive:
                 self.productive_streak_min = 0
-                return "nudge"
-            self.productive_streak_min += minutes
-            if self.productive_streak_min >= 30:
-                self.productive_streak_min = 0
-                return "praise"
-            return None
+                outcome = "nudge"
+            else:
+                self.productive_streak_min += minutes
+                if self.productive_streak_min >= 30:
+                    self.productive_streak_min = 0
+                    outcome = "praise"
+
+            # One canonical entry powers last_verdict, full UI history and the
+            # bounded TTS slice, preventing timestamp/content drift.
+            entry = {
+                "ts": timestamp.isoformat(),
+                "productive": productive,
+                "reason": reason,
+                "observed": observed,
+            }
+            self.evaluation_history.append(entry)
+            self.last_verdict = dict(entry)
+            return outcome
 
     def context_summary(self, now: datetime | None = None) -> str:
         """One multi-line snapshot of the whole session — handed to every TTS
@@ -256,12 +284,86 @@ class SessionState:
             if self.current_break:
                 lines.append(f"on a {self.current_break.kind} break for: "
                              f"{self.current_break.purpose}")
-            if self.recent_verdicts:
+            recent = self.evaluation_history[-5:]
+            if recent:
                 lines.append("recent monitor observations (oldest first):")
-                lines += [f"  [{v['ts']}] {'productive' if v['productive'] else 'NOT productive'}"
+                lines += [f"  [{datetime.fromisoformat(v['ts']):%H:%M}] "
+                          f"{'productive' if v['productive'] else 'NOT productive'}"
                           f" - {v['observed'] or v['reason']}"
-                          for v in self.recent_verdicts]
+                          for v in recent]
             return "\n".join(lines)
+
+    def status_snapshot(self, now: datetime | None = None) -> dict:
+        """Return one locked, JSON-safe snapshot for the realtime dashboard."""
+
+        current = now or datetime.now()
+        with self._lock:
+            # Freeze session duration at disable time; active sessions continue
+            # advancing on every poll.
+            elapsed_until = self.session_end or current
+            elapsed_s = (
+                max(0, int((elapsed_until - self.session_start).total_seconds()))
+                if self.session_start
+                else 0
+            )
+            if self.mode is Mode.OFF:
+                pause_reason = "Enforcement is off."
+            elif self.mode is Mode.BREAK:
+                pause_reason = "A scheduled break is active."
+            elif self.agentic_mode and self.agent_busy:
+                pause_reason = "The AI coding agent is working."
+            else:
+                pause_reason = None
+
+            enforcement_on = self.mode is not Mode.OFF
+            blocked_domains = self.effective_blocklist() if enforcement_on else ()
+            target_processes = (
+                self.effective_kill_processes() if enforcement_on else ()
+            )
+            br = self.current_break
+            break_payload = (
+                {
+                    "purpose": br.purpose,
+                    "kind": br.kind,
+                    "until": br.end_time.isoformat(),
+                    "remaining_s": max(
+                        0,
+                        int((br.end_time - current).total_seconds()),
+                    ),
+                    "allowed_sites": list(br.allowed_sites),
+                    "allowed_apps": list(br.allowed_apps),
+                }
+                if br
+                else None
+            )
+            # Reversed copies put the newest item first without exposing the
+            # mutable list shared with the scheduler thread.
+            history = [dict(item) for item in reversed(self.evaluation_history)]
+            return {
+                "mode": self.mode.value,
+                "topic": self.topic,
+                "active_project": self.active_project,
+                "session_started_at": (
+                    self.session_start.isoformat() if self.session_start else None
+                ),
+                "session_elapsed_s": elapsed_s,
+                "productive_streak_min": self.productive_streak_min,
+                "social_minutes_remaining": self.social_minutes_remaining(current),
+                "social_minutes_cap": self.daily_social_cap_min,
+                "last_verdict": dict(self.last_verdict) if self.last_verdict else None,
+                "evaluation_history": history,
+                "monitoring_active": self.monitoring_active,
+                "monitoring_pause_reason": pause_reason,
+                "agentic_mode": self.agentic_mode,
+                "agent_busy": self.agent_busy,
+                "break": break_payload,
+                "enforcement": {
+                    "hosts_active": bool(blocked_domains),
+                    "blocked_domain_count": len(blocked_domains),
+                    "app_killer_active": bool(target_processes),
+                    "target_process_count": len(target_processes),
+                },
+            }
 
     # ---------- persistence (results/state.json via storage.py) ----------
 
