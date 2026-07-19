@@ -117,7 +117,11 @@ class Scheduler:
                 "error": f"{type(exc).__name__}: {exc}",
             }
         path = self.store.save_capture(image)
-        verdict = self.analyzer.add_capture(path, topic=self.state.topic)
+        verdict = self.analyzer.add_capture(
+            path,
+            topic=self.state.topic,
+            allowed_sites=self.state.work_allowed_sites,
+        )
         if verdict is None:                        # defensive fake/legacy support
             return {"status": "no_verdict"}
         # Fold the verdict into the streak; outcome may demand speech.

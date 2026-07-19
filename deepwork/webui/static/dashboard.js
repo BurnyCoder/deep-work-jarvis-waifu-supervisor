@@ -150,10 +150,31 @@
       setText("agent-detail", "Focus monitoring and blocking are active.");
     }
 
-    setText("project-state", status.active_project || "None");
+    const workAccess = status.work_access || {};
+    const workSites = Array.isArray(workAccess.allowed_sites)
+      ? workAccess.allowed_sites
+      : [];
+    const workSiteLabels = Array.isArray(workAccess.allowed_site_labels)
+      ? workAccess.allowed_site_labels
+      : workSites.map(titleCase);
+    setText(
+      "project-state",
+      workSiteLabels.length ? workSiteLabels.join(", ") : "None",
+    );
+    const presetDetail = workAccess.project
+      ? `Preset: ${workAccess.project}. `
+      : "";
+    let accessDetail = "No work-required websites allowed.";
+    if (workSites.length && status.mode === "off") {
+      accessDetail = `${presetDetail}Last session task access; enforcement is off.`;
+    } else if (workSites.length && status.mode === "break") {
+      accessDetail = `${presetDetail}Task sites remain open; monitoring is paused for the break.`;
+    } else if (workSites.length) {
+      accessDetail = `${presetDetail}Work-required websites stay open; monitoring remains active.`;
+    }
     setText(
       "project-detail",
-      status.active_project ? "Project site allowlist active." : "No project allowlist.",
+      accessDetail,
     );
     const enforcement = status.enforcement || {};
     setText(

@@ -5,6 +5,8 @@
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from deepwork.config import CONFIRMATION_PHRASE
 from deepwork.state import Mode, SessionState
 
@@ -88,6 +90,82 @@ def test_effective_blocklist_honours_break_and_project_allowances():
     assert "x.com" not in blocked and "reddit.com" in blocked
 
 
+def test_task_sites_are_free_monitored_access_and_do_not_spare_apps():
+    s = make_state()
+    s.start_session(
+        "publish a LinkedIn update",
+        now=T0,
+        allowed_sites=["linkedin", "twitter"],
+    )
+    blocked = s.effective_blocklist()
+    assert "linkedin.com" not in blocked and "x.com" not in blocked
+    assert "reddit.com" in blocked and "youtube.com" in blocked
+    assert "discord.exe" in s.effective_kill_processes()
+    assert s.social_minutes_remaining(now=T0) == 120
+    assert s.monitoring_active
+
+
+def test_project_preset_and_one_off_task_sites_are_combined():
+    s = make_state()
+    s.start_session(
+        "share research",
+        now=T0,
+        project="ml-research",
+        allowed_sites=["linkedin", "twitter"],
+    )
+    assert s.work_allowed_sites == ("twitter", "linkedin")
+    snapshot = s.status_snapshot(now=T0)
+    assert snapshot["work_access"] == {
+        "project": "ml-research",
+        "selected_sites": ["twitter", "linkedin"],
+        "allowed_sites": ["twitter", "linkedin"],
+        "allowed_site_labels": ["X / Twitter", "LinkedIn"],
+    }
+
+
+def test_task_access_resets_on_new_session_and_rejects_unknown_input_atomically():
+    s = make_state()
+    s.start_session("first", now=T0, allowed_sites=["twitter"])
+    s.start_session("second", now=T0 + timedelta(minutes=1))
+    assert s.work_allowed_sites == ()
+    assert "x.com" in s.effective_blocklist()
+
+    with pytest.raises(ValueError, match="Unknown website group"):
+        s.start_session(
+            "forged",
+            now=T0 + timedelta(minutes=2),
+            allowed_sites=["unknown"],
+        )
+    assert s.topic == "second"
+    assert s.mode is Mode.ON
+
+
+def test_task_access_remains_open_during_break_and_after_agent_finishes():
+    s = make_state()
+    s.start_session(
+        "social campaign",
+        now=T0,
+        allowed_sites=["twitter"],
+        agentic=True,
+    )
+    s.start_break(
+        "reddit pause",
+        10,
+        "social_media",
+        allowed_sites=["reddit"],
+        now=T0,
+    )
+    blocked = s.effective_blocklist()
+    assert "x.com" not in blocked and "reddit.com" not in blocked
+
+    s.end_break_if_due(now=T0 + timedelta(minutes=10))
+    s.set_agent_busy(True)
+    assert s.effective_blocklist() == ()
+    s.set_agent_busy(False)
+    blocked = s.effective_blocklist()
+    assert "x.com" not in blocked and "reddit.com" in blocked
+
+
 def test_effective_kill_list_honours_break_app_allowance():
     s = make_state()
     s.start_session("x", now=T0)
@@ -137,6 +215,12 @@ def test_status_snapshot_is_consistent_and_reports_live_enforcement():
     assert off["mode"] == "off"
     assert off["session_elapsed_s"] == 0
     assert off["monitoring_pause_reason"] == "Enforcement is off."
+    assert off["work_access"] == {
+        "project": None,
+        "selected_sites": [],
+        "allowed_sites": [],
+        "allowed_site_labels": [],
+    }
     assert off["enforcement"] == {
         "hosts_active": False,
         "blocked_domain_count": 0,
@@ -162,12 +246,13 @@ def test_status_snapshot_is_consistent_and_reports_live_enforcement():
 def test_context_summary_grounds_all_the_facts():
     from datetime import timedelta
     s = make_state()
-    s.start_session("write thesis", now=T0)
+    s.start_session("write thesis", now=T0, allowed_sites=["linkedin"])
     s.record_verdict(False, minutes=25, observed="Reddit threads on monitor 1")
     ctx = s.context_summary(now=T0 + timedelta(minutes=40))
     assert "write thesis" in ctx                   # topic
     assert "40" in ctx                             # minutes into the session
     assert "120" in ctx                            # allowance remaining
+    assert "linkedin" in ctx                       # sanctioned task access
     assert "Reddit threads on monitor 1" in ctx    # recent observation window
 
 
@@ -227,7 +312,7 @@ def test_agentic_busy_pauses_productivity_monitoring():
 
 def test_persistence_round_trip():
     s = make_state()
-    s.start_session("write thesis", now=T0)
+    s.start_session("write thesis", now=T0, allowed_sites=["twitter"])
     s.start_break("scroll", 15, "social_media", allowed_sites=["reddit"], now=T0)
     restored = make_state()
     restored.load_dict(s.to_dict())                # JSON-safe dict round trip
@@ -235,3 +320,4 @@ def test_persistence_round_trip():
     # reset when the app restarts); live mode intentionally does not.
     assert restored.social_minutes_remaining(now=T0) == 105
     assert restored.previous_topics == ["write thesis"]
+    assert restored.work_allowed_sites == ()       # live access never persists
