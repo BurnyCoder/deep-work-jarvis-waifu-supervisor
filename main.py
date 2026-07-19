@@ -44,8 +44,13 @@ def build_app_objects(cfg, blocker):
     state.load_dict(store.load_state())            # allowance/topics survive restarts
 
     client = OpenAI(api_key=cfg.openai_api_key)    # one shared API client
-    analyzer = ProductivityAnalyzer(client=client, model=cfg.vision_model,
-                                    store=store, batch_size=cfg.batch_size)
+    analyzer = ProductivityAnalyzer(
+        client=client,
+        model=cfg.vision_model,
+        store=store,
+        window_size=cfg.progress_window_captures,
+        reasoning_effort=cfg.progress_reasoning_effort,
+    )
     messages = MessageGenerator(client=client, model=cfg.text_model, store=store)
     speech = SpeechQueue(make_speaker(cfg, client))
 
@@ -55,11 +60,11 @@ def build_app_objects(cfg, blocker):
                           kill_interval_s=cfg.kill_interval_s,
                           # Agentic mode watcher: fast single-capture polls.
                           agent_checker=AgentActivityChecker(
-                              client=client, model=cfg.vision_model, store=store),
+                              client=client,
+                              model=cfg.agent_vision_model,
+                              store=store,
+                          ),
                           agent_check_interval_s=cfg.agent_check_interval_s)
-    # One verdict certifies the whole batch window, in minutes.
-    scheduler.verdict_minutes = max(1, cfg.batch_size * cfg.capture_interval_s // 60)
-
     flask_app = create_app(state=state, blocker=blocker, store=store,
                            messages=messages, speech=speech)
     return scheduler, flask_app, (state, store, speech)
@@ -74,15 +79,12 @@ def load_project_allowlists() -> dict:
 
 
 def run_smoke(scheduler, speech) -> None:
-    """One immediate capture→stitch→analyze→speak cycle for manual verification
-    (documented in README) — forces batch size 1 so the vision call happens now."""
-    scheduler.analyzer.batch_size = 1
+    """Run the real always-evaluate capture→vision→speech path exactly once."""
     scheduler.state.start_session("smoke test")
     scheduler._monitor_tick()                      # the real pipeline, once
     verdict = scheduler.state.last_verdict or {}
-    # Speak the verdict reason so TTS is exercised end-to-end too.
-    speech.say(f"Smoke test verdict: {'productive' if verdict.get('productive') else 'not productive'}. "
-               f"{verdict.get('reason', 'no verdict')}")
+    # _monitor_tick queues the only utterance; waiting verifies playback without
+    # duplicating the same verdict through a special smoke-only speech path.
     speech.wait_idle(timeout=60)
     log.info("smoke cycle complete: %s", verdict)
 

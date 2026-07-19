@@ -11,8 +11,11 @@ def test_defaults_when_env_empty():
     # https://docs.pytest.org/en/stable/how-to/monkeypatch.html
     cfg = load_config({"OPENAI_API_KEY": "sk-test"})
     assert cfg.openai_api_key == "sk-test"
+    assert cfg.vision_model == "gpt-5.6-sol"
+    assert cfg.progress_reasoning_effort == "xhigh"
+    assert cfg.agent_vision_model == "gpt-5.4-mini"
     assert cfg.capture_interval_s == 300          # 5-minute default cadence
-    assert cfg.batch_size == 5                    # captures per vision call
+    assert cfg.progress_window_captures == 5      # rolling 25-minute context
     assert cfg.kill_interval_s == 3               # app-kill sweep period
     assert cfg.daily_social_cap_min == 120        # 2 h/day social allowance
     assert cfg.ui_port == 5000
@@ -26,16 +29,27 @@ def test_env_overrides_win():
     cfg = load_config({
         "OPENAI_API_KEY": "sk-test",
         "VISION_MODEL": "some-model",
+        "PROGRESS_REASONING_EFFORT": "high",
+        "AGENT_VISION_MODEL": "agent-model",
         "CAPTURE_INTERVAL_S": "60",
-        "BATCH_SIZE": "2",
+        "PROGRESS_WINDOW_CAPTURES": "2",
         "TTS_ENGINE": "pyttsx3",
         "UI_PORT": "8080",
     })
     assert cfg.vision_model == "some-model"
+    assert cfg.progress_reasoning_effort == "high"
+    assert cfg.agent_vision_model == "agent-model"
     assert cfg.capture_interval_s == 60
-    assert cfg.batch_size == 2
+    assert cfg.progress_window_captures == 2
     assert cfg.tts_engine == "pyttsx3"
     assert cfg.ui_port == 8080
+
+
+def test_legacy_batch_size_still_configures_progress_window():
+    # Existing local .env files used BATCH_SIZE before the analyzer changed
+    # from non-overlapping batches to a rolling progress window.
+    cfg = load_config({"OPENAI_API_KEY": "sk-test", "BATCH_SIZE": "3"})
+    assert cfg.progress_window_captures == 3
 
 
 def test_blocklist_covers_required_sites_and_variants():
