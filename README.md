@@ -3,9 +3,7 @@
 Holds you to deep focus on Windows 11: blocks distracting websites, kills
 distraction apps, compares a rolling history of your screens + webcam for
 visible progress, and speaks a fresh encouragement or gentle nudge every five
-minutes, all controlled from a small local web panel.
-
-<img width="1024" height="1084" alt="image" src="https://github.com/user-attachments/assets/45316b36-f744-49d9-bbed-2ab6bdbcaaf7" />
+minutes, all controlled from a readable realtime local dashboard.
 
 ## Features
 
@@ -41,8 +39,13 @@ minutes, all controlled from a small local web panel.
    specific social sites for a named productive project while ON.
 6. **Confirmation phrase** : turning enforcement off requires typing exactly
    `I will not stop cool deepwork session`.
-7. **Web UI**: `http://127.0.0.1:5599` (port via `UI_PORT`): topic input
-   with a dropdown of previous topics, break and disable forms, live status.
+7. **Realtime web dashboard**: `http://127.0.0.1:5000` by default (port via
+   `UI_PORT`) puts live status before the controls. It shows mode, topic,
+   session duration, monitoring and evaluation countdowns, streak and social
+   allowance, current-session evaluation history, break/agent state, active
+   blocking counts, and scheduler health. Each evaluation keeps its complete
+   reason visible and its full screen/webcam observation in an expandable
+   disclosure.
 8. **Agentic engineering mode**: tick *agentic engineering* when starting a
    session (or toggle mid-session). A vision check every 60 s
    (`AGENT_CHECK_INTERVAL_S`) watches your screens for an AI coding agent
@@ -70,6 +73,10 @@ flowchart TD
     Main["main.py<br/>config + object wiring"] --> UI["Flask control panel"]
     Main --> Scheduler["Scheduler threads"]
     Main --> State["SessionState"]
+    UI -- "GET /status every 3 s" --> Status["Status payload composer"]
+    Status --> State
+    Status --> Runtime["RuntimeStatus<br/>loop cadence + health"]
+    Scheduler --> Runtime
     Scheduler --> Enforcer["Enforcer<br/>hosts + app killing"]
     Scheduler --> Gate{"Focused monitoring active?"}
     Gate -- "OFF / BREAK / agent busy" --> Quiet["No capture or periodic voice"]
@@ -125,9 +132,39 @@ uv run python main.py --dry-hosts  # full app but hosts changes are only logged 
 uv run python main.py              # full app: shows ONE UAC prompt, then the web panel
 ```
 
-Then open **http://127.0.0.1:5599**, type what you'll work on, press
+Then open **http://127.0.0.1:5000** (or the `UI_PORT` from `.env`), type what
+you'll work on, press
 **Start**: you'll hear your good-luck message immediately, then a fresh
 progress-aware voice update after each five-minute monitoring tick.
+
+### Realtime dashboard
+
+The browser fetches `/status` every three seconds and updates countdowns once
+per second between requests. Polls never overlap, pause while the tab is
+hidden, and resume immediately when you return. If the local server is briefly
+unreachable, the dashboard keeps the last good data visible and shows
+**Reconnecting** instead of blanking the page.
+
+Productivity history is scoped to the **current session**:
+
+- Every completed evaluation appears newest-first with its timestamp,
+  productive/off-track label, full reason, and expandable full observation.
+- BREAK and OFF preserve the completed timeline so it can still be reviewed.
+- Starting a new session clears the visible timeline and latest verdict.
+- Restarting the program clears the in-memory dashboard history; durable
+  verdict events remain in `results/sessions/*.jsonl`.
+
+The operations cards report the actual number of blocked domains and watched
+process names plus each scheduler loop's cadence, phase, previous result,
+next-run countdown, and latest error. `/status` is also a documented,
+no-cache JSON endpoint for local inspection:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:5000/status
+```
+
+The panel remains bound to `127.0.0.1`; it displays textual AI observations
+but does not serve saved capture images or raw prompts.
 
 ### Optional: per-project social allowlist
 
@@ -155,7 +192,10 @@ linkedin, bluesky, substack, facebook, lesswrong, eaforum, 4chan).
    everything off and the hosts section removed.
 6. Run `uv run python main.py --smoke`: one real capture is evaluated and
    spoken exactly once.
-7. Inspect `logs/` and `results/llm/`: every LLM prompt and full response is
+7. Keep the dashboard open through two evaluations: both appear newest-first,
+   the reason is readable, and **What the monitor saw** expands to the full
+   observation. Check the live enforcement and scheduler cards as well.
+8. Inspect `logs/` and `results/llm/`: every LLM prompt and full response is
    there, untruncated.
 
 ## Known limitations & caveats

@@ -5,15 +5,29 @@
 # https://flask.palletsprojects.com/en/stable/patterns/appfactories/
 
 import logging
+from datetime import datetime
 
 # Flask quickstart: https://flask.palletsprojects.com/en/stable/quickstart/
 from flask import Flask, jsonify, redirect, render_template, request
 
+from deepwork.webui.status import build_status_payload, empty_runtime_snapshot
+
 log = logging.getLogger(__name__)
 
 
-def create_app(state, blocker, store, messages, speech) -> Flask:
+def create_app(
+    state,
+    blocker,
+    store,
+    messages,
+    speech,
+    runtime_snapshot=None,
+    now_fn=None,
+) -> Flask:
     app = Flask(__name__)                          # templates/ auto-discovered
+    # Optional providers preserve the app factory's dependency-injected tests.
+    get_runtime_snapshot = runtime_snapshot or empty_runtime_snapshot
+    get_now = now_fn or datetime.now
 
     @app.get("/")
     def index():
@@ -80,7 +94,7 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
     @app.post("/disable")
     def disable():
         # Requirement 6: exact confirmation phrase or a hard 403.
-        if not state.try_disable(request.form.get("phrase", "")):
+        if not state.try_disable(request.form.get("phrase", ""), now=get_now()):
             return "Wrong confirmation phrase - enforcement stays on.", 403
         blocker.clear()                            # restore the hosts file
         store.append_session_event({"event": "disabled"})
@@ -89,17 +103,15 @@ def create_app(state, blocker, store, messages, speech) -> Flask:
     @app.get("/status")
     def status():
         # Polled by index.html's JS every few seconds; also handy for curl.
-        br = state.current_break
-        return jsonify({
-            "mode": state.mode.value,
-            "topic": state.topic,
-            "productive_streak_min": state.productive_streak_min,
-            "social_minutes_remaining": state.social_minutes_remaining(),
-            "last_verdict": state.last_verdict,
-            "agentic_mode": state.agentic_mode,
-            "agent_busy": state.agent_busy,
-            "break": {"purpose": br.purpose, "kind": br.kind,
-                      "until": br.end_time.isoformat()} if br else None,
-        })
+        payload = build_status_payload(
+            state,
+            runtime_snapshot=get_runtime_snapshot,
+            now=get_now(),
+        )
+        response = jsonify(payload)
+        # Realtime status must never be reused from an intermediary cache:
+        # https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     return app
