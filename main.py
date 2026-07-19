@@ -66,7 +66,8 @@ def build_app_objects(cfg, blocker):
                           ),
                           agent_check_interval_s=cfg.agent_check_interval_s)
     flask_app = create_app(state=state, blocker=blocker, store=store,
-                           messages=messages, speech=speech)
+                           messages=messages, speech=speech,
+                           runtime_snapshot=scheduler.runtime_snapshot)
     return scheduler, flask_app, (state, store, speech)
 
 
