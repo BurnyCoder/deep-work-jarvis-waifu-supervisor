@@ -37,6 +37,16 @@ def test_save_llm_exchange_round_trips_uncut(tmp_path):
     assert data["kind"] == "vision"
 
 
+def test_rapid_llm_exchanges_get_distinct_timestamped_files(tmp_path):
+    # Rolling-window tests and accelerated smoke runs can finish more than one
+    # same-kind request inside a second; no full exchange may be overwritten.
+    store = ResultsStore(tmp_path)
+    first = store.save_llm_exchange("vision", {"input": "one"}, {"output": "one"})
+    second = store.save_llm_exchange("vision", {"input": "two"}, {"output": "two"})
+    assert first != second
+    assert first.exists() and second.exists()
+
+
 def test_session_events_append_as_jsonl(tmp_path):
     store = ResultsStore(tmp_path)
     store.append_session_event({"event": "session_start", "topic": "thesis"})

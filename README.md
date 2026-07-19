@@ -1,9 +1,9 @@
 # Deep Work: Windows Productivity Enforcement App
 
 Holds you to deep focus on Windows 11: blocks distracting websites, kills
-distraction apps, watches your screens + webcam with an AI coach every five
-minutes, and speaks encouragement or gentle nudges out loud, all controlled
-from a small local web panel.
+distraction apps, compares a rolling history of your screens + webcam for
+visible progress, and speaks a fresh encouragement or gentle nudge every five
+minutes, all controlled from a small local web panel.
 
 <img width="1024" height="1084" alt="image" src="https://github.com/user-attachments/assets/45316b36-f744-49d9-bbed-2ab6bdbcaaf7" />
 
@@ -16,17 +16,22 @@ from a small local web panel.
    `# >>> deepwork block` section that is cleanly removed on OFF/exit.
 2. **App killing**: a background sweep terminates Discord, Telegram and
    Steam every 3 seconds while enforcement is on.
-3. **AI monitoring**: every 5 minutes all monitors and the webcam are
-   captured and stitched into one labeled image; every 5 captures one OpenAI
-   vision call judges the whole 25-minute window and returns
-   `{productive: yes/no, reason: <encouraging sentence>}`.
-4. **Spoken feedback**: an LLM writes (and OpenAI TTS speaks) a good-luck
-   message when you start a topic, a gentle nudge when you're off track, and
-   praise after 30 consecutive productive minutes. Nudges and praise quote
-   what the monitor concretely saw ("you had Twitter open on monitor 2..."),
-   and every message is grounded in full session context — topic, elapsed
-   time, streak, allowance left, and the last few observations. Offline
-   `pyttsx3` voice available via `TTS_ENGINE=pyttsx3`.
+3. **Rolling progress monitoring**: every 5 minutes all monitors and the
+   webcam are captured and stitched into one labeled image. Every capture
+   triggers an OpenAI vision evaluation over the newest 1–5 captures, ordered
+   oldest to newest; after warm-up, this is always the latest 25-minute
+   window. The coach compares documents, code, tests, research and other
+   visible task state for real progress. A full on-topic window with no
+   meaningful progress gets a gentle stalled-work nudge, while plausible
+   reading/thinking work is not rejected merely for looking static.
+4. **Spoken feedback every 5 minutes**: an immediate LLM-written good-luck
+   message starts the session, then every successful monitoring evaluation
+   produces exactly one spoken update. Ordinary productive checks speak the
+   fresh vision reason directly; distraction or stalled work gets a
+   context-rich nudge; every 30 consecutive productive minutes gets praise.
+   Voice pauses while OFF, on BREAK, or while an agentic coding agent is busy.
+   OpenAI TTS voices are AI-generated, not human. Offline `pyttsx3` remains
+   available via `TTS_ENGINE=pyttsx3`.
 5. **Modes**: **ON** (everything enforced), **OFF** (nothing), **BREAK**
    (timed, auto-restoring; you state what it's for and how long, TTS
    acknowledges). Breaks can allow only specific sites/apps
@@ -54,6 +59,32 @@ from a small local web panel.
    (allowance + topic history, survives restarts). Runtime logs stream to the
    terminal and `logs/deepwork_*.log` simultaneously.
 
+## Architecture
+
+`main.py` remains the readable wrapper that wires configuration, state,
+storage, enforcement, monitoring, feedback and the local web UI. The rolling
+monitoring path is:
+
+```mermaid
+flowchart TD
+    Main["main.py<br/>config + object wiring"] --> UI["Flask control panel"]
+    Main --> Scheduler["Scheduler threads"]
+    Main --> State["SessionState"]
+    Scheduler --> Enforcer["Enforcer<br/>hosts + app killing"]
+    Scheduler --> Gate{"Focused monitoring active?"}
+    Gate -- "OFF / BREAK / agent busy" --> Quiet["No capture or periodic voice"]
+    Gate -- "yes, every 5 min" --> Capture["Capture monitors + webcam<br/>stitch and store JPEG"]
+    Capture --> Window["ProductivityAnalyzer<br/>rolling deque, newest 1–5 captures"]
+    Window --> Vision["OpenAI Responses API<br/>multi-image structured verdict"]
+    Vision --> State
+    State --> Outcome{"Nudge or 30-min praise?"}
+    Outcome -- "yes" --> Message["Context-rich MessageGenerator"]
+    Outcome -- "ordinary productive tick" --> Reason["Fresh verdict reason"]
+    Message --> Speech["Single SpeechQueue worker"]
+    Reason --> Speech
+    Speech --> TTS["OpenAI TTS or pyttsx3"]
+```
+
 ## Requirements
 
 - Windows 11 (hosts file, winsound, UAC elevation are Windows-specific)
@@ -70,7 +101,13 @@ copy .env.example .env       # then edit .env and set OPENAI_API_KEY
 ```
 
 All configuration lives in `.env`: see `.env.example` for every variable
-(models, intervals, batch size, TTS engine/voice, allowance cap, UI port).
+(models, reasoning effort, intervals, rolling progress-window size, TTS
+engine/voice, allowance cap, UI port). Productivity evaluation defaults to
+`VISION_MODEL=gpt-5.6-sol` with `PROGRESS_REASONING_EFFORT=xhigh`;
+`PROGRESS_WINDOW_CAPTURES=5` means each evaluation compares up to the five
+latest captures. The frequent agent-busy poll remains on
+`AGENT_VISION_MODEL=gpt-5.4-mini`. Older `.env` files using `BATCH_SIZE`
+still work.
 
 ## Run
 
@@ -89,7 +126,8 @@ uv run python main.py              # full app: shows ONE UAC prompt, then the we
 ```
 
 Then open **http://127.0.0.1:5599**, type what you'll work on, press
-**Start**: you'll hear your good-luck message and enforcement begins.
+**Start**: you'll hear your good-luck message immediately, then a fresh
+progress-aware voice update after each five-minute monitoring tick.
 
 ### Optional: per-project social allowlist
 
@@ -115,7 +153,9 @@ linkedin, bluesky, substack, facebook, lesswrong, eaforum, 4chan).
    unblocks, and a minute later blocking auto-restores (watch the log).
 5. `/disable` with a wrong phrase → refused (403). With the exact phrase →
    everything off and the hosts section removed.
-6. Inspect `logs/` and `results/llm/`: every LLM prompt and full response is
+6. Run `uv run python main.py --smoke`: one real capture is evaluated and
+   spoken exactly once.
+7. Inspect `logs/` and `results/llm/`: every LLM prompt and full response is
    there, untruncated.
 
 ## Known limitations & caveats
@@ -133,12 +173,18 @@ linkedin, bluesky, substack, facebook, lesswrong, eaforum, 4chan).
   `# >>> deepwork block` section from
   `C:\Windows\System32\drivers\etc\hosts` by hand (as admin) and run
   `ipconfig /flushdns`.
-- **Model names churn.** `VISION_MODEL`/`TEXT_MODEL`/`TTS_MODEL` are plain
-  `.env` strings: check the [OpenAI pricing page](https://developers.openai.com/api/docs/pricing)
-  and update when models are retired.
-- **Cost**: with `detail: low`, a 5-image analysis costs well under a cent;
-  each TTS sentence is similarly cheap. Everything runs on the mini tier by
-  default.
+- **Model names churn.** `VISION_MODEL`/`AGENT_VISION_MODEL`/`TEXT_MODEL`/
+  `TTS_MODEL` are plain `.env` strings: check the
+  [OpenAI model guide](https://developers.openai.com/api/docs/guides/latest-model)
+  and [pricing page](https://developers.openai.com/api/docs/pricing) when
+  models are retired or when tuning quality, latency, and cost.
+- **Cost**: after warm-up, one vision request containing five low-detail
+  images and one TTS request run every five minutes of focused work. This is
+  intentionally more API usage than the old once-per-25-minute batch.
+  GPT-5.6 Sol at `xhigh` prioritizes evaluation quality over latency and cost;
+  lower `PROGRESS_REASONING_EFFORT` after representative testing if desired.
+  [OpenAI documents](https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input)
+  that every image in a multi-image request counts toward billed tokens.
 
 ## Development
 

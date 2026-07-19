@@ -14,9 +14,10 @@ log = logging.getLogger(__name__)
 
 
 def _stamp(now: datetime | None = None) -> str:
-    # One shared timestamp format for filenames: sortable, second precision.
+    # One shared timestamp format for filenames: sortable microsecond precision
+    # prevents rapid same-kind LLM exchanges from overwriting each other.
     # strftime codes: https://docs.python.org/3/library/datetime.html#format-codes
-    return f"{now or datetime.now():%Y%m%d_%H%M%S}"
+    return f"{now or datetime.now():%Y%m%d_%H%M%S_%f}"
 
 
 class ResultsStore:
