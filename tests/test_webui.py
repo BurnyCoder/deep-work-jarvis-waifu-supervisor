@@ -45,6 +45,7 @@ def test_index_lists_previous_topics(ui):
     state.previous_topics[:] = ["thesis", "emails"]
     html = client.get("/").get_data(as_text=True)
     assert "thesis" in html and "emails" in html   # datalist options present
+    assert "AI-generated" in html                  # required TTS disclosure
 
 
 def test_start_session_blocks_and_speaks_good_luck(ui):
