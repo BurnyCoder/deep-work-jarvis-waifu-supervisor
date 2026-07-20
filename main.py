@@ -34,13 +34,16 @@ def build_app_objects(cfg, blocker):
     from deepwork.feedback.tts import SpeechQueue, make_speaker
     from deepwork.monitoring.analyzer import AgentActivityChecker, ProductivityAnalyzer
     from deepwork.scheduler import Scheduler
+    from deepwork.site_access import load_project_allowlists
     from deepwork.state import SessionState
     from deepwork.storage import ResultsStore
     from deepwork.webui.app import create_app
 
     store = ResultsStore(Path("results"))          # requirement 8: results folder
     state = SessionState(daily_social_cap_min=cfg.daily_social_cap_min,
-                         project_allowlists=load_project_allowlists())
+                         project_allowlists=load_project_allowlists(
+                             Path("projects.json")
+                         ))
     state.load_dict(store.load_state())            # allowance/topics survive restarts
 
     client = OpenAI(api_key=cfg.openai_api_key)    # one shared API client
@@ -69,14 +72,6 @@ def build_app_objects(cfg, blocker):
                            messages=messages, speech=speech,
                            runtime_snapshot=scheduler.runtime_snapshot)
     return scheduler, flask_app, (state, store, speech)
-
-
-def load_project_allowlists() -> dict:
-    # Optional projects.json maps project name -> allowed site groups, e.g.
-    # {"ml-research": ["twitter"]} (requirement 5, per-project allowlist).
-    import json
-    path = Path("projects.json")
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
 def run_smoke(scheduler, speech) -> None:
@@ -112,7 +107,13 @@ def main() -> None:
     blocker = DryRunBlocker() if (args.dry_hosts or args.smoke) else HostsBlocker(cfg.hosts_path)
 
     # --- phase 4: build and wire all collaborators ---
-    scheduler, flask_app, (state, store, speech) = build_app_objects(cfg, blocker)
+    try:
+        scheduler, flask_app, (state, store, speech) = build_app_objects(cfg, blocker)
+    except ValueError as exc:
+        # Invalid projects.json is configuration, so fail before any scheduler
+        # threads or web requests can run with a silently weakened policy.
+        log.error("configuration invalid: %s", exc)
+        sys.exit(1)
 
     # --- phase 5: crash/exit safety — never leave the hosts file blocked ---
     # atexit runs on normal exit and unhandled exceptions (not on hard kill;

@@ -137,10 +137,10 @@
                   </dd>
                 </div>
                 <div>
-                  <dt>Project</dt>
+                  <dt>Task access</dt>
                   <dd>
                     <strong id="project-state">None</strong>
-                    <span id="project-detail">No project allowlist.</span>
+                    <span id="project-detail">No work-required websites allowed.</span>
                   </dd>
                 </div>
               </dl>
@@ -207,18 +207,45 @@
               </div>
 
               <div class="field">
-                <label for="session-project">Project allowlist</label>
+                <label for="session-project">Saved project preset</label>
                 <select id="session-project" name="project">
-                  <option value="">No project allowlist</option>
-                  {% for p in projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+                  <option value="">No saved preset</option>
+                  {% for p in projects %}
+                    <option value="{{ p.name }}">
+                      {{ p.name }} — {{ p.sites | join(", ") }}
+                    </option>
+                  {% endfor %}
                 </select>
               </div>
+
+              <!-- Same-name checkbox controls submit repeated values, which
+                   Flask/Werkzeug reads with request.form.getlist():
+                   https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/checkbox -->
+              <fieldset class="site-choice-field field-wide">
+                <legend>Websites needed for this task</legend>
+                <p>
+                  Checked sites stay open for this focused session without using
+                  break minutes. Monitoring and feedback remain active.
+                </p>
+                <div class="site-choice-grid">
+                  {% for key, label in site_options %}
+                    <label class="site-choice" for="task-site-{{ key }}">
+                      <input id="task-site-{{ key }}" type="checkbox"
+                             name="allowed_sites" value="{{ key }}">
+                      <span>{{ label }}</span>
+                    </label>
+                  {% endfor %}
+                </div>
+              </fieldset>
 
               <label class="checkbox-field">
                 <input type="checkbox" name="agentic">
                 <span>
                   <strong>Agentic engineering</strong>
-                  <small>Allow social sites while an AI coding agent works.</small>
+                  <small>
+                    Open all websites while an AI coding agent works; task sites
+                    remain open when it finishes.
+                  </small>
                 </span>
               </label>
 

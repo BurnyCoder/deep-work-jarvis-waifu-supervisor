@@ -131,6 +131,23 @@ def test_request_shape_matches_responses_api(tmp_path):
     assert all("one stitched image" in t["text"] for t in texts[1:])
 
 
+def test_request_marks_task_allowed_sites_as_conditional_not_automatic_progress(
+    tmp_path,
+):
+    analyzer, client, store = make_analyzer(tmp_path)
+    analyzer.add_capture(
+        save_named_capture(store, "01.jpg", "red"),
+        topic="publish a launch update",
+        allowed_sites=("twitter", "linkedin"),
+    )
+    header = client.responses.last_kwargs["input"][-1]["content"][0]["text"]
+    assert "twitter, linkedin" in header
+    assert "does not automatically make the activity productive" in header
+    assert "visibly serves the stated topic" in header
+    assert "unless" in SYSTEM_PROMPT.lower()
+    assert "explicitly lists" in SYSTEM_PROMPT.lower()
+
+
 def test_request_explicitly_marks_warmup_then_full_window(tmp_path):
     analyzer, client, store = make_analyzer(tmp_path, window_size=3)
     paths = [
