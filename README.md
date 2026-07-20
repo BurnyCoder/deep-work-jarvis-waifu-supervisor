@@ -219,8 +219,10 @@ environment and lockfile behavior.
 | `OPENAI_API_KEY` | none | Required API credential |
 | `VISION_MODEL` | `gpt-5.6-sol` | Rolling productivity vision model |
 | `PROGRESS_REASONING_EFFORT` | `xhigh` | Productivity-model reasoning effort |
-| `AGENT_VISION_MODEL` | `gpt-5.4-mini` | Frequent agent-activity vision model |
-| `TEXT_MODEL` | `gpt-5.4-mini` | Good-luck/nudge/praise message model |
+| `AGENT_VISION_MODEL` | `gpt-5.6-sol` | Frequent agent-activity vision model |
+| `AGENT_REASONING_EFFORT` | `xhigh` | Agent-activity reasoning effort |
+| `TEXT_MODEL` | `gpt-5.6-sol` | Good-luck/nudge/praise message model |
+| `TEXT_REASONING_EFFORT` | `xhigh` | Feedback-message reasoning effort |
 | `TTS_ENGINE` | `openai` | `openai` or `pyttsx3` playback |
 | `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
 | `TTS_VOICE` | `coral` | OpenAI speech voice |
@@ -235,10 +237,12 @@ environment and lockfile behavior.
 `PROGRESS_WINDOW_CAPTURES`. The hosts path, website/app tables, and disable
 phrase are code constants rather than `.env` settings.
 
-The current model IDs are documented by OpenAI:
-[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
-[GPT-5.4 mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini),
-and
+All Responses API text and vision calls default to
+[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol) with
+`xhigh` reasoning. These quality-first defaults can increase latency and cost,
+especially for the one-minute agent watcher; each workload therefore keeps
+separate `.env` overrides. Sol produces text rather than speech, so TTS remains
+on the dedicated
 [GPT-4o mini TTS](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts).
 Model access and lifecycle can vary, so change the `.env` values and retest if
 your API project cannot use a default.

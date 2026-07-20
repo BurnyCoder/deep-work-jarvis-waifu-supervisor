@@ -54,7 +54,12 @@ def build_app_objects(cfg, blocker):
         window_size=cfg.progress_window_captures,
         reasoning_effort=cfg.progress_reasoning_effort,
     )
-    messages = MessageGenerator(client=client, model=cfg.text_model, store=store)
+    messages = MessageGenerator(
+        client=client,
+        model=cfg.text_model,
+        store=store,
+        reasoning_effort=cfg.text_reasoning_effort,
+    )
     speech = SpeechQueue(make_speaker(cfg, client))
 
     scheduler = Scheduler(state=state, blocker=blocker, store=store,
@@ -66,6 +71,7 @@ def build_app_objects(cfg, blocker):
                               client=client,
                               model=cfg.agent_vision_model,
                               store=store,
+                              reasoning_effort=cfg.agent_reasoning_effort,
                           ),
                           agent_check_interval_s=cfg.agent_check_interval_s)
     flask_app = create_app(state=state, blocker=blocker, store=store,

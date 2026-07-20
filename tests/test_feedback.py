@@ -73,11 +73,16 @@ def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
 
 def test_generator_calls_llm_and_persists_exchange(tmp_path):
     client = FakeClient()
-    gen = MessageGenerator(client=client, model="test-model",
-                           store=ResultsStore(tmp_path))
+    gen = MessageGenerator(
+        client=client,
+        model="test-model",
+        store=ResultsStore(tmp_path),
+        reasoning_effort="xhigh",
+    )
     text = gen.generate("good_luck", topic="write thesis")
     assert text == "You've got this!"
     assert client.responses.last_kwargs["model"] == "test-model"
+    assert client.responses.last_kwargs["reasoning"] == {"effort": "xhigh"}
     # Full exchange saved to results/llm/ (spec: outputs logged uncut).
     assert list((tmp_path / "llm").glob("*_message.json"))
 
