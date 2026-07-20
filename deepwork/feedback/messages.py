@@ -1,7 +1,7 @@
 # LLM-generated feedback messages (requirement 4): the words spoken to the
 # user are never canned — a text model writes each good-luck, nudge, praise
-# and break acknowledgment from live context (topic, verdict reason, break
-# purpose). One shared generate() path = no duplicated call code.
+# and break start/end acknowledgment from live context (topic, verdict reason,
+# break purpose). One shared generate() path = no duplicated call code.
 # Responses API text generation: https://github.com/openai/openai-python
 
 import logging
@@ -59,6 +59,13 @@ _TEMPLATES = {
         "A user is taking a {minutes}-minute break for: {purpose!r}. Write one "
         "short, friendly spoken sentence acknowledging the break and saying "
         "you'll see them back after it. No emojis, it will be read aloud."
+    ),
+    "break_end_ack": (
+        "A user has ended their break for {purpose!r} after "
+        "{charged_minutes} charged minute(s). Focus enforcement has resumed. "
+        "Write one short, upbeat spoken sentence welcoming them back and "
+        "encouraging them to return to their current task. No emojis, it will "
+        "be read aloud."
     ),
 }
 

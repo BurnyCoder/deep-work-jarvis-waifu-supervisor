@@ -253,6 +253,7 @@
                 Start session
               </button>
             </form>
+
           </section>
 
           <section class="control-card" aria-labelledby="agentic-heading">
@@ -309,6 +310,19 @@
 
               <button type="submit" class="secondary-button field-wide">
                 Start break
+              </button>
+            </form>
+
+            <!-- This is deliberately a sibling form: HTML forms cannot be
+                 nested, and ending a break is its own POST action:
+                 https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/form -->
+            <form id="stop-break-form" method="post" action="/break/stop"
+                  class="stack-form{% if mode != 'break' %} is-hidden{% endif %}">
+              <p class="control-description">
+                End the current break early and restore focus enforcement.
+              </p>
+              <button type="submit" class="primary-button">
+                Stop break and resume work
               </button>
             </form>
           </section>

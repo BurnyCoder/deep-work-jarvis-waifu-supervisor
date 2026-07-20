@@ -75,6 +75,88 @@ def test_break_auto_restores_on_expiry():
     assert s.mode is Mode.ON                       # enforcement resumes
 
 
+@pytest.mark.parametrize(
+    ("elapsed_seconds", "charged_minutes"),
+    [
+        (0, 0),                                    # no elapsed time costs nothing
+        (1, 1),                                    # every started minute is charged
+        (60, 1),                                   # exact minute boundaries stay exact
+        (61, 2),
+        (600, 10),
+        (900, 10),                                 # never charge beyond the reservation
+    ],
+)
+def test_manual_break_stop_refunds_unelapsed_social_minutes(
+    elapsed_seconds,
+    charged_minutes,
+):
+    s = make_state()
+    s.start_session("x", now=T0)
+    s.productive_streak_min = 25
+    s.start_break(
+        "scroll",
+        10,
+        "social_media",
+        allowed_sites=["reddit"],
+        allowed_apps=["discord"],
+        now=T0,
+    )
+
+    result = s.stop_break(now=T0 + timedelta(seconds=elapsed_seconds))
+
+    assert result is not None
+    assert result.requested_minutes == 10
+    assert result.elapsed_seconds == min(elapsed_seconds, 600)
+    assert result.charged_minutes == charged_minutes
+    assert result.refunded_minutes == 10 - charged_minutes
+    assert s.social_minutes_remaining(now=T0) == 120 - charged_minutes
+    assert s.mode is Mode.ON and s.current_break is None
+    assert s.productive_streak_min == 0
+    assert s.monitoring_active
+    assert "reddit.com" in s.effective_blocklist()
+    assert "discord.exe" in s.effective_kill_processes()
+
+
+def test_manual_away_break_stop_does_not_change_social_allowance():
+    s = make_state()
+    s.start_session("x", now=T0)
+    s.start_break("walk", 10, "away", now=T0)
+
+    result = s.stop_break(now=T0 + timedelta(minutes=2))
+
+    assert result is not None
+    assert result.charged_minutes == 2
+    assert result.refunded_minutes == 0
+    assert s.social_minutes_remaining(now=T0) == 120
+
+
+def test_manual_break_stop_is_idempotent_and_preserves_task_access():
+    s = make_state()
+    s.start_session("publish update", now=T0, allowed_sites=["twitter"])
+    assert s.stop_break(now=T0) is None
+    s.start_break(
+        "reddit pause",
+        10,
+        "social_media",
+        allowed_sites=["reddit"],
+        now=T0,
+    )
+
+    assert s.stop_break(now=T0 + timedelta(seconds=1)) is not None
+    assert s.stop_break(now=T0 + timedelta(seconds=2)) is None
+    blocked = s.effective_blocklist()
+    assert "x.com" not in blocked and "reddit.com" in blocked
+
+
+def test_automatic_break_expiry_keeps_the_full_social_reservation():
+    s = make_state()
+    s.start_session("x", now=T0)
+    s.start_break("scroll", 10, "social_media", now=T0)
+
+    assert s.end_break_if_due(now=T0 + timedelta(minutes=10))
+    assert s.social_minutes_remaining(now=T0) == 110
+
+
 def test_effective_blocklist_honours_break_and_project_allowances():
     s = make_state()
     s.start_session("x", now=T0)
