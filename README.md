@@ -21,7 +21,9 @@ minutes, all controlled from a readable realtime local dashboard.
    window. The coach compares documents, code, tests, research and other
    visible task state for real progress. A full on-topic window with no
    meaningful progress gets a gentle stalled-work nudge, while plausible
-   reading/thinking work is not rejected merely for looking static.
+   reading/thinking work is not rejected merely for looking static. Websites
+   explicitly required for the task are judged by whether their visible use
+   advances that task, not treated as automatically productive or distracting.
 4. **Spoken feedback every 5 minutes**: an immediate LLM-written good-luck
    message starts the session, then every successful monitoring evaluation
    produces exactly one spoken update. Ordinary productive checks speak the
@@ -35,27 +37,30 @@ minutes, all controlled from a readable realtime local dashboard.
    acknowledges). Breaks can allow only specific sites/apps
    (`reddit,discord`) while everything else stays blocked, and come in two
    kinds: *social media* (draws from a **2 h/day allowance**, refused once
-   exhausted) or *away from computer*. A `projects.json` file can allowlist
-   specific social sites for a named productive project while ON.
+   exhausted) or *away from computer*. When starting focused work, you can
+   select any blocked website groups genuinely required for that task; only
+   those sites open, normal monitoring continues, and no break minutes are
+   charged. Optional `projects.json` presets add reusable site selections.
 6. **Confirmation phrase** : turning enforcement off requires typing exactly
    `I will not stop cool deepwork session`.
 7. **Realtime web dashboard**: `http://127.0.0.1:5000` by default (port via
    `UI_PORT`) puts live status before the controls. It shows mode, topic,
    session duration, monitoring and evaluation countdowns, streak and social
-   allowance, current-session evaluation history, break/agent state, active
-   blocking counts, and scheduler health. Each evaluation keeps its complete
-   reason visible and its full screen/webcam observation in an expandable
-   disclosure.
+   allowance, task-required website access, current-session evaluation
+   history, break/agent state, active blocking counts, and scheduler health.
+   Each evaluation keeps its complete reason visible and its full
+   screen/webcam observation in an expandable disclosure.
 8. **Agentic engineering mode**: tick *agentic engineering* when starting a
    session (or toggle mid-session). A vision check every 60 s
    (`AGENT_CHECK_INTERVAL_S`) watches your screens for an AI coding agent
    (Claude Code, Cursor, terminal agents) that is actively working — spinner,
    streaming output, running tools. While it works, **everything unblocks**
    so you can scroll Twitter guilt-free; the moment it finishes or waits for
-   your input, the full blocklist snaps back and the voice calls you over to
-   review. Waiting time is free (no 2 h allowance drain), and productivity
-   nudges pause while the agent runs. Cost: one low-detail capture per
-   minute, a few cents per workday.
+   your input, the session's normal blocklist snaps back while explicitly
+   task-required sites remain open, and the voice calls you over to review.
+   Waiting time is free (no 2 h allowance drain), and productivity nudges
+   pause while the agent runs. Cost: one low-detail capture per minute, a few
+   cents per workday.
 9. **Results storage**: `results/captures/*.jpg` (stitched images),
    `results/llm/*.json` (full, uncut LLM request/response pairs),
    `results/sessions/*.jsonl` (timestamped event log), `results/state.json`
@@ -73,15 +78,19 @@ flowchart TD
     Main["main.py<br/>config + object wiring"] --> UI["Flask control panel"]
     Main --> Scheduler["Scheduler threads"]
     Main --> State["SessionState"]
+    UI -- "task sites + optional preset" --> Access["site_access policy<br/>validate + ordered union"]
+    Access --> State
     UI -- "GET /status every 3 s" --> Status["Status payload composer"]
     Status --> State
     Status --> Runtime["RuntimeStatus<br/>loop cadence + health"]
     Scheduler --> Runtime
-    Scheduler --> Enforcer["Enforcer<br/>hosts + app killing"]
+    State --> Effective["Effective access<br/>full blocklist − allowed task/break sites"]
+    Effective --> Enforcer["Enforcer<br/>hosts + app killing"]
+    Scheduler --> Enforcer
     Scheduler --> Gate{"Focused monitoring active?"}
     Gate -- "OFF / BREAK / agent busy" --> Quiet["No capture or periodic voice"]
     Gate -- "yes, every 5 min" --> Capture["Capture monitors + webcam<br/>stitch and store JPEG"]
-    Capture --> Window["ProductivityAnalyzer<br/>rolling deque, newest 1–5 captures"]
+    Capture --> Window["ProductivityAnalyzer<br/>topic + allowed sites + newest 1–5 captures"]
     Window --> Vision["OpenAI Responses API<br/>multi-image structured verdict"]
     Vision --> State
     State --> Outcome{"Nudge or 30-min praise?"}
@@ -107,7 +116,7 @@ uv sync                      # creates ./.venv and installs everything
 copy .env.example .env       # then edit .env and set OPENAI_API_KEY
 ```
 
-All configuration lives in `.env`: see `.env.example` for every variable
+Environment configuration lives in `.env`: see `.env.example` for every variable
 (models, reasoning effort, intervals, rolling progress-window size, TTS
 engine/voice, allowance cap, UI port). Productivity evaluation defaults to
 `VISION_MODEL=gpt-5.6-sol` with `PROGRESS_REASONING_EFFORT=xhigh`;
@@ -133,8 +142,8 @@ uv run python main.py              # full app: shows ONE UAC prompt, then the we
 ```
 
 Then open **http://127.0.0.1:5000** (or the `UI_PORT` from `.env`), type what
-you'll work on, press
-**Start**: you'll hear your good-luck message immediately, then a fresh
+you'll work on, optionally check only the websites required for that task, and
+press **Start**. You'll hear your good-luck message immediately, then a fresh
 progress-aware voice update after each five-minute monitoring tick.
 
 ### Realtime dashboard
@@ -166,24 +175,43 @@ Invoke-RestMethod http://127.0.0.1:5000/status
 The panel remains bound to `127.0.0.1`; it displays textual AI observations
 but does not serve saved capture images or raw prompts.
 
-### Optional: per-project social allowlist
+### Task-scoped website access and saved presets
 
-Create `projects.json` in the repo root, e.g.:
+The Start form lists every blocked website group. Checked groups stay open
+until the next focused session starts; an unchecked group remains blocked.
+This is productive-work access, so:
+
+- the five-minute screen/webcam evaluation and spoken feedback stay active;
+- the daily social-break allowance is not reduced;
+- Discord, Telegram, and Steam desktop processes are still killed;
+- a timed break temporarily adds its own site/app allowances; and
+- after agentic waiting ends, task-required sites remain open while the rest
+  re-block.
+
+One-off selections are intentionally not written to `results/state.json`; a
+new session defaults to no task access. The current choices and their effective
+union are visible on the dashboard and at `/status` under `work_access`.
+
+For reusable selections, create `projects.json` in the repo root, e.g.:
 
 ```json
 {"ml-research": ["twitter"], "community": ["discord", "bluesky"]}
 ```
 
-Selecting that project on Start keeps everything blocked *except* those site
-groups. Valid group names are the keys of `SITE_DOMAINS` in
+Selecting a preset adds its groups to the one-off checkboxes, with duplicates
+removed. Valid group names are the keys of `SITE_DOMAINS` in
 `deepwork/config.py` (reddit, youtube, twitter, discord, hackernews,
-linkedin, bluesky, substack, facebook, lesswrong, eaforum, 4chan).
+linkedin, bluesky, substack, facebook, lesswrong, eaforum, 4chan). Invalid JSON,
+unknown groups, or an invalid preset shape stop startup with a clear log error
+instead of silently weakening enforcement.
 
 ## Verifying it works (manual smoke checklist)
 
 1. `uv run python main.py` → accept the UAC prompt.
-2. Start a session; check `C:\Windows\System32\drivers\etc\hosts` now has the
-   `# >>> deepwork block start` section and `ping reddit.com` answers from
+2. Start a session allowing `twitter` and `linkedin`; check
+   `C:\Windows\System32\drivers\etc\hosts` has the
+   `# >>> deepwork block start` section, does not contain `x.com` or
+   `linkedin.com` inside that section, and still maps `reddit.com` to
    `127.0.0.1`.
 3. Launch Discord or Steam: it dies within ~3 s.
 4. Take a 1-minute social break allowing `reddit`: TTS acknowledges, Reddit
@@ -192,11 +220,14 @@ linkedin, bluesky, substack, facebook, lesswrong, eaforum, 4chan).
    everything off and the hosts section removed.
 6. Run `uv run python main.py --smoke`: one real capture is evaluated and
    spoken exactly once.
-7. Keep the dashboard open through two evaluations: both appear newest-first,
+7. Keep the dashboard open through two evaluations: task access is shown,
+   both evaluations appear newest-first,
    the reason is readable, and **What the monitor saw** expands to the full
    observation. Check the live enforcement and scheduler cards as well.
-8. Inspect `logs/` and `results/llm/`: every LLM prompt and full response is
-   there, untruncated.
+8. Inspect `logs/`, `results/sessions/`, and `results/llm/`: the session event
+   records selected/effective site keys, the vision prompt names the allowed
+   sites and conditional task-alignment rule, and every full LLM response is
+   present untruncated.
 
 ## Known limitations & caveats
 

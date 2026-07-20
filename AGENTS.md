@@ -6,7 +6,8 @@ A Windows 11 productivity enforcement app: hosts-file website blocking,
 distraction-app killing, five-minute rolling AI screen/webcam progress
 monitoring with OpenAI vision, five-minute spoken LLM feedback, ON/OFF/BREAK
 modes with a daily social-media allowance, a confirmation-phrase gate, a local
-Flask control panel, and results storage. Python 3.13, uv-managed local `.venv`.
+Flask control panel, task-scoped website access, and results storage. Python
+3.13, uv-managed local `.venv`.
 
 ## Commands
 
@@ -30,8 +31,9 @@ selection → object wiring → atexit safety → run. All logic lives in
 | Module | Responsibility |
 |---|---|
 | `config.py` | `.env` → frozen `Config`; site/app group tables (`SITE_DOMAINS`, `APP_PROCESSES`) |
+| `site_access.py` | shared site labels, strict key normalization, `projects.json` loading, preset + one-off task-access union |
 | `logging_setup.py` | root logger → timestamped file in `logs/` + terminal, utf-8 |
-| `state.py` | thread-safe `SessionState`: modes, breaks, allowance, current-session verdict history, enforcement/status snapshots, phrase gate |
+| `state.py` | thread-safe `SessionState`: modes, task/preset access, breaks, allowance, current-session verdict history, enforcement/status snapshots, phrase gate |
 | `storage.py` | `results/` writers: capture JPEGs, uncut LLM JSON, session JSONL, `state.json` |
 | `scheduler.py` | enforcer/monitor/agent-watch threads; capture→rolling analysis→one utterance; publishes loop results to runtime telemetry |
 | `runtime_status.py` | locked, JSON-safe scheduler cadence/phase/last-next-run/result/error telemetry |
@@ -41,11 +43,11 @@ selection → object wiring → atexit safety → run. All logic lives in
 | `monitoring/screen_capture.py` | mss per-monitor grabs → PIL |
 | `monitoring/webcam_capture.py` | OpenCV `CAP_DSHOW` single frame, non-fatal on failure |
 | `monitoring/stitcher.py` | labeled vertical composite of all captures |
-| `monitoring/analyzer.py` | newest 1–N captures in a bounded rolling progress window → `responses.parse` → `ProductivityVerdict`; `AgentActivityChecker` single-capture "is the AI agent busy?" poll for agentic mode |
+| `monitoring/analyzer.py` | topic + sanctioned task-site context + newest 1–N captures in a bounded rolling progress window → `responses.parse` → `ProductivityVerdict`; `AgentActivityChecker` single-capture "is the AI agent busy?" poll for agentic mode |
 | `feedback/messages.py` | LLM-written good-luck / nudge / praise / break-ack sentences |
 | `feedback/tts.py` | OpenAI TTS→WAV→winsound or pyttsx3; single `SpeechQueue` worker |
 | `webui/app.py` + `status.py` | Flask routes and additive no-cache `/status` payload composition |
-| `webui/templates/` + `static/` | status-first responsive dashboard; safe three-second polling and current-session evaluation timeline |
+| `webui/templates/` + `static/` | status-first responsive dashboard; task-site checkbox grid, safe three-second polling, current-session evaluation timeline |
 
 ## Conventions
 
@@ -69,6 +71,10 @@ selection → object wiring → atexit safety → run. All logic lives in
 - pyttsx3 engines are re-created per utterance (reuse bug nateshmbhat/pyttsx3#193).
 - Browser "Secure DNS" (DoH) bypasses hosts blocking — see README caveats.
 - `SessionState` methods take `now: datetime` for testability; pass it in new code.
+- Task-site access is free productive-work access: it stays monitored, never
+  spends social-break minutes, and never spares desktop apps.
+- `projects.json` presets and one-off Start-form choices are unioned; a new
+  session resets one-off choices, and unknown site keys must fail closed.
 
 # Rules to follow
 

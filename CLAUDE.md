@@ -4,7 +4,8 @@ A Windows 11 productivity enforcement app: hosts-file website blocking,
 distraction-app killing, periodic AI screen/webcam monitoring with OpenAI
 vision, spoken LLM-generated feedback, ON/OFF/BREAK modes with a daily
 social-media allowance, a confirmation-phrase gate, a local Flask control
-panel, and results storage. Python 3.13, uv-managed local `.venv`.
+panel, task-scoped website access, and results storage. Python 3.13,
+uv-managed local `.venv`.
 
 ## Commands
 
@@ -28,8 +29,9 @@ selection → object wiring → atexit safety → run. All logic lives in
 | Module | Responsibility |
 |---|---|
 | `config.py` | `.env` → frozen `Config`; site/app group tables (`SITE_DOMAINS`, `APP_PROCESSES`) |
+| `site_access.py` | shared labels, strict site-key validation, `projects.json` presets, preset + one-off access union |
 | `logging_setup.py` | root logger → timestamped file in `logs/` + terminal, utf-8 |
-| `state.py` | thread-safe `SessionState`: modes, breaks, 2h/day social allowance, `effective_blocklist()`, phrase gate |
+| `state.py` | thread-safe `SessionState`: modes, task/preset website access, breaks, 2h/day social allowance, `effective_blocklist()`, phrase gate |
 | `storage.py` | `results/` writers: capture JPEGs, uncut LLM JSON, session JSONL, `state.json` |
 | `scheduler.py` | enforcer thread (kill sweep + break watchdog) and monitor thread (capture→analyze→speak) |
 | `blocking/admin.py` | `IsUserAnAdmin` check + `ShellExecuteW("runas")` self-relaunch |
@@ -97,8 +99,9 @@ from a small local web panel.
    acknowledges). Breaks can allow only specific sites/apps
    (`reddit,discord`) while everything else stays blocked, and come in two
    kinds: *social media* (draws from a **2 h/day allowance**, refused once
-   exhausted) or *away from computer*. A `projects.json` file can allowlist
-   specific social sites for a named productive project while ON.
+   exhausted) or *away from computer*. The Start form can allow only the
+   website groups required for the current task without spending break time;
+   optional `projects.json` presets add reusable selections.
 6. **Confirmation phrase** : turning enforcement off requires typing exactly
    `I will not stop cool deepwork session`.
 7. **Web UI**: `http://127.0.0.1:5599` (port via `UI_PORT`): topic input
@@ -146,7 +149,12 @@ uv run python main.py              # full app: shows ONE UAC prompt, then the we
 Then open **http://127.0.0.1:5599**, type what you'll work on, press
 **Start**: you'll hear your good-luck message and enforcement begins.
 
-### Optional: per-project social allowlist
+### Task-scoped website access and saved presets
+
+Select only the website groups needed for the focused task on Start. These
+sites remain monitored, do not consume the social-break allowance, do not
+spare desktop apps, and reset on the next session. A selected project preset
+is unioned with the one-off checkboxes.
 
 Create `projects.json` in the repo root, e.g.:
 

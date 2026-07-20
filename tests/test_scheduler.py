@@ -34,8 +34,8 @@ class FakeAnalyzer:
         self.captures = []
         self.resets = 0
 
-    def add_capture(self, path, topic):
-        self.captures.append((path, topic))
+    def add_capture(self, path, topic, allowed_sites=()):
+        self.captures.append((path, topic, tuple(allowed_sites)))
         return self.verdict
 
     def reset(self):
@@ -136,6 +136,25 @@ def test_capture_verdict_nudge_flows_to_speech(tmp_path):
     assert "thesis" in kwargs["session_context"]
 
 
+def test_monitor_forwards_task_allowed_sites_to_vision_and_message_context(
+    tmp_path,
+):
+    verdict = ProductivityVerdict(
+        productive=True,
+        reason="The campaign draft is moving.",
+        observed="LinkedIn composer shows a task-aligned draft.",
+    )
+    sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
+    state.start_session(
+        "publish campaign",
+        now=T0,
+        allowed_sites=["linkedin", "twitter"],
+    )
+    sched._monitor_tick()
+    assert sched.analyzer.captures[0][2] == ("twitter", "linkedin")
+    assert "linkedin" in state.context_summary(now=T0)
+
+
 def test_productive_verdict_reason_is_spoken_each_tick(tmp_path):
     verdict = ProductivityVerdict(productive=True, reason="You advanced the test suite.",
                                   observed="IDE shows three newly passing tests")
@@ -194,6 +213,22 @@ def test_agent_watch_unblocks_then_reblocks_on_transitions(tmp_path):
     sched._agent_watch_tick()
     assert "reddit.com" in sched.blocker.applied[-1]
     assert sched.speech.spoken == ["<agent_running>", "<agent_done>"]
+
+
+def test_agent_watch_restores_task_specific_blocklist(tmp_path):
+    checker = FakeAgentChecker([True, False])
+    sched, state, _ = make_scheduler(tmp_path, agent_checker=checker)
+    state.start_session(
+        "publish campaign",
+        now=T0,
+        allowed_sites=["twitter"],
+        agentic=True,
+    )
+    sched._agent_watch_tick()
+    assert sched.blocker.applied[-1] == ()
+    sched._agent_watch_tick()
+    assert "x.com" not in sched.blocker.applied[-1]
+    assert "reddit.com" in sched.blocker.applied[-1]
 
 
 def test_agent_watch_inactive_without_agentic_mode(tmp_path):

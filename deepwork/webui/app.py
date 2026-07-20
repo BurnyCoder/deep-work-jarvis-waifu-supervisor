@@ -10,6 +10,7 @@ from datetime import datetime
 # Flask quickstart: https://flask.palletsprojects.com/en/stable/quickstart/
 from flask import Flask, jsonify, redirect, render_template, request
 
+from deepwork.site_access import site_labels, site_options
 from deepwork.webui.status import build_status_payload, empty_runtime_snapshot
 
 log = logging.getLogger(__name__)
@@ -34,24 +35,64 @@ def create_app(
         # Jinja template gets the topic history for the <datalist> dropdown
         # and current mode for display:
         # https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates
-        return render_template("index.html",
-                               topics=state.previous_topics,
-                               mode=state.mode.value,
-                               projects=sorted(state.project_allowlists))
+        projects = [
+            {
+                "name": name,
+                "sites": list(site_labels(state.project_allowlists[name])),
+            }
+            for name in sorted(state.project_allowlists)
+        ]
+        return render_template(
+            "index.html",
+            topics=state.previous_topics,
+            mode=state.mode.value,
+            projects=projects,
+            site_options=site_options(),
+        )
 
     @app.post("/start")
     def start():
-        # Requirement 4/5: entering a topic starts ON mode; optional project
-        # activates its social allowlist while everything else stays blocked.
-        topic = request.form["topic"].strip()
-        state.start_session(topic)
-        state.set_project(request.form.get("project") or None)
-        # Agentic engineering: checkbox posts "on" when ticked (HTML checkbox
-        # semantics: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/checkbox)
-        state.set_agentic(request.form.get("agentic") == "on")
+        # Requirement 4/5: entering a topic starts ON mode; one-off site
+        # choices and an optional saved preset open only what the task needs.
+        form = request.form
+        topic = form["topic"].strip()
+        project = form.get("project") or None
+        selected_sites = form.getlist("allowed_sites")
+        agentic = form.get("agentic") == "on"
+        try:
+            # Same-name checkbox values are retrieved with MultiDict.getlist:
+            # https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
+            state.start_session(
+                topic,
+                allowed_sites=selected_sites,
+                project=project,
+                agentic=agentic,
+            )
+        except ValueError as exc:
+            # Browser constraints are UX only; reject forged values before a
+            # hosts write, state change, event, prompt, or spoken response.
+            log.warning("session start refused: %s", exc)
+            return str(exc), 400
         blocker.apply(state.effective_blocklist()) # enforce immediately
-        store.append_session_event({"event": "session_start", "topic": topic})
+        allowed_sites = list(state.work_allowed_sites)
+        store.append_session_event({
+            "event": "session_start",
+            "topic": topic,
+            "project": state.active_project,
+            "selected_sites": list(state.task_allowed_sites),
+            "allowed_sites": allowed_sites,
+            "agentic": state.agentic_mode,
+        })
         store.save_state(state.to_dict())          # topic history survives restart
+        log.info(
+            "session started: topic=%r project=%r selected_sites=%s "
+            "allowed_sites=%s agentic=%s",
+            topic,
+            state.active_project,
+            list(state.task_allowed_sites),
+            allowed_sites,
+            state.agentic_mode,
+        )
         # LLM writes the good-luck line, TTS speaks it ("good luck on x topic").
         speech.say(messages.generate("good_luck", topic=topic,
                                      session_context=state.context_summary()))
