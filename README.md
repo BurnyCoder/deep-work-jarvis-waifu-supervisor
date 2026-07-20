@@ -7,6 +7,10 @@ webcam frame, asks an OpenAI vision model for a structured productivity
 verdict, and speaks feedback. A local Flask dashboard controls the session and
 shows current state and scheduler health.
 
+<img width="800" height="1066" alt="image" src="https://github.com/user-attachments/assets/27943052-b10e-437b-8b53-cc22dff76f92" />
+
+<img width="600" height="848" alt="image" src="https://github.com/user-attachments/assets/e63face5-e02f-4ec7-a5eb-cdfe4b309d27" />
+
 This is an enforcement aid, not a security boundary. The blocklist is explicit,
 the AI can be wrong, and anyone with administrator access can undo the policy.
 
