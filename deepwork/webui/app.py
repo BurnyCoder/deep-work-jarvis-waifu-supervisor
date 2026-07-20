@@ -64,6 +64,7 @@ def create_app(
             # https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
             state.start_session(
                 topic,
+                now=get_now(),
                 allowed_sites=selected_sites,
                 project=project,
                 agentic=agentic,
@@ -109,6 +110,7 @@ def create_app(
             kind=form.get("kind", "away"),
             allowed_sites=split(form.get("allowed_sites", "")),
             allowed_apps=split(form.get("allowed_apps", "")),
+            now=get_now(),
         )
         if not ok:                                 # e.g. social cap exhausted
             log.info("break refused: %s", reason)
@@ -120,6 +122,54 @@ def create_app(
         speech.say(messages.generate("break_ack", purpose=form["purpose"],
                                      minutes=form["minutes"],
                                      session_context=state.context_summary()))
+        return redirect("/")
+
+    @app.post("/break/stop")
+    def stop_break():
+        # A state-changing form uses POST; redirecting afterward prevents a
+        # browser refresh from presenting a resubmission prompt:
+        # https://flask.palletsprojects.com/en/stable/quickstart/#redirects-and-errors
+        stopped_at = get_now()
+        result = state.stop_break(now=stopped_at)
+        if result is None:
+            # The watchdog can expire a break between the dashboard poll and
+            # this click. A harmless redirect is friendlier than a race-only
+            # error page and does not repeat any side effect.
+            log.info("break stop ignored - no active break")
+            return redirect("/")
+
+        blocker.apply(state.effective_blocklist()) # close break-only sites now
+        event = {
+            "event": "break_stopped",
+            "purpose": result.purpose,
+            "kind": result.kind,
+            "requested_minutes": result.requested_minutes,
+            "elapsed_seconds": result.elapsed_seconds,
+            "charged_minutes": result.charged_minutes,
+            "refunded_minutes": result.refunded_minutes,
+        }
+        store.append_session_event(event)
+        store.save_state(state.to_dict())          # persist any social refund
+        log.info(
+            "break stopped - purpose=%r kind=%s elapsed_seconds=%d "
+            "charged_minutes=%d refunded_minutes=%d; enforcement restored",
+            result.purpose,
+            result.kind,
+            result.elapsed_seconds,
+            result.charged_minutes,
+            result.refunded_minutes,
+        )
+        try:
+            # Enforcement must stay restored if the optional model call fails.
+            text = messages.generate(
+                "break_end_ack",
+                purpose=result.purpose,
+                charged_minutes=result.charged_minutes,
+                session_context=state.context_summary(now=stopped_at),
+            )
+            speech.say(text)
+        except Exception:
+            log.exception("break-stop spoken feedback failed")
         return redirect("/")
 
     @app.post("/agentic")
