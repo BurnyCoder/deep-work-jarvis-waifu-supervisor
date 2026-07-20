@@ -156,10 +156,11 @@ flowchart TD
 
     Scheduler --> Monitor["Productivity loop"]
     Monitor --> Gate{"monitoring_active?"}
-    Gate -- "yes" --> Capture["productivity capture<br/>all monitors + optional webcam"]
+    Gate -- "yes" --> CaptureLock["shared capture lock<br/>one caller at a time"]
     Gate -- "no" --> Paused["OFF / BREAK / agent busy"]
+    CaptureLock --> Capture["capture_stitched<br/>all monitors + optional webcam"]
     Capture --> Store
-    Capture --> Analyzer["rolling 1..N capture analyzer"]
+    Capture -- "monitor caller" --> Analyzer["rolling 1..N capture analyzer"]
     Analyzer --> Vision["OpenAI Responses API<br/>structured verdict"]
     Vision --> State
     State --> Feedback["direct reason or generated nudge/praise"]
@@ -167,9 +168,8 @@ flowchart TD
     Speech --> TTS["OpenAI Speech API or pyttsx3"]
 
     Scheduler --> AgentWatch["Agent-watch loop"]
-    AgentWatch --> AgentCapture["same stitched capture path"]
-    AgentCapture --> Store
-    AgentCapture --> AgentVision["single-capture activity verdict"]
+    AgentWatch --> CaptureLock
+    Capture -- "agent-watch caller" --> AgentVision["single-capture activity verdict"]
     AgentVision --> State
     State --> Hosts
 
@@ -182,6 +182,12 @@ The scheduler uses fixed-delay loops: each loop waits its configured interval,
 runs the blocking tick, then waits again. Capture/API duration therefore adds
 to the wall-clock time between tick starts, and session Start does not reset
 the global loop countdown.
+
+The productivity and agent-watch loops share one capture lock because
+[OpenCV documents `VideoCapture` as non-thread-safe](https://docs.opencv.org/master/d0/db6/tutorial_orbbec_astra_openni.html).
+The lock covers only the injected screen/webcam capture call, so an overlapping
+request waits for the active capture to finish; saving, model analysis, state
+updates, and speech remain outside the lock.
 
 ## Requirements
 
