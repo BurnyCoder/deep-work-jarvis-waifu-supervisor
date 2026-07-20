@@ -2,6 +2,7 @@
 # tests are deterministic (no sleeping); one test exercises real threads with
 # tiny intervals to prove start/stop works.
 
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -237,6 +238,147 @@ def test_agent_watch_inactive_without_agentic_mode(tmp_path):
     state.start_session("normal work", now=T0)      # agentic mode NOT enabled
     sched._agent_watch_tick()
     assert checker.checks == 0                      # no capture, no API call
+
+
+class ObservedLock:
+    """Expose lock-attempt timing without weakening the real mutual exclusion."""
+
+    def __init__(self):
+        # A normal primitive lock remains the synchronization implementation:
+        # https://docs.python.org/3/library/threading.html#lock-objects
+        self._lock = threading.Lock()
+        self._counter_lock = threading.Lock()
+        self.attempts = 0
+        self.second_attempted = threading.Event()
+
+    def acquire(self):
+        """Signal the second attempt immediately before it blocks on the lock."""
+        with self._counter_lock:
+            self.attempts += 1
+            attempt = self.attempts
+        if attempt == 2:
+            self.second_attempted.set()
+        return self._lock.acquire()
+
+    def release(self):
+        """Release the wrapped primitive lock."""
+        self._lock.release()
+
+    def locked(self):
+        """Expose the wrapped lock state for the exception-release assertion."""
+        return self._lock.locked()
+
+    def __enter__(self):
+        """Support the context-manager protocol used by Scheduler."""
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Always release the lock when capture returns or raises."""
+        self.release()
+
+
+def test_monitor_and_agent_watch_serialize_shared_capture(tmp_path):
+    """The two scheduler consumers must never overlap native capture work."""
+    first_capture_started = threading.Event()
+    counter_lock = threading.Lock()
+    active_captures = 0
+    max_active_captures = 0
+    capture_calls = 0
+
+    checker = FakeAgentChecker([False])
+    verdict = ProductivityVerdict(
+        productive=True,
+        reason="Focused work is visible.",
+        observed="IDE open on monitor 1.",
+    )
+    sched, state, _ = make_scheduler(
+        tmp_path,
+        verdict=verdict,
+        agent_checker=checker,
+    )
+    observed_lock = ObservedLock()
+    sched._capture_lock = observed_lock
+    state.start_session("agentic coding", now=T0, agentic=True)
+
+    def blocking_capture():
+        """Hold capture one until the other scheduler path requests the lock."""
+        nonlocal active_captures, max_active_captures, capture_calls
+        with counter_lock:
+            capture_calls += 1
+            call_number = capture_calls
+            active_captures += 1
+            max_active_captures = max(max_active_captures, active_captures)
+        try:
+            if call_number == 1:
+                first_capture_started.set()
+                assert observed_lock.second_attempted.wait(timeout=2)
+            return Image.new("RGB", (8, 8), "green")
+        finally:
+            with counter_lock:
+                active_captures -= 1
+
+    sched.capture_fn = blocking_capture
+    results = {}
+    thread_errors = []
+
+    def run_tick(name, tick):
+        """Return worker results and exceptions to pytest's main thread."""
+        try:
+            results[name] = tick()
+        except BaseException as exc:                 # retain AssertionError too
+            thread_errors.append(exc)
+
+    monitor = threading.Thread(
+        target=run_tick,
+        args=("monitor", sched._monitor_tick),
+    )
+    agent_watch = threading.Thread(
+        target=run_tick,
+        args=("agent_watch", sched._agent_watch_tick),
+    )
+    monitor.start()
+    assert first_capture_started.wait(timeout=1)
+    agent_watch.start()
+    monitor.join(timeout=3)
+    agent_watch.join(timeout=3)
+
+    assert not monitor.is_alive() and not agent_watch.is_alive()
+    assert thread_errors == []
+    assert results["monitor"]["status"] == "productive"
+    assert results["agent_watch"]["status"] == "idle"
+    assert capture_calls == 2
+    assert max_active_captures == 1
+
+
+def test_capture_exception_releases_lock_for_next_scheduler_path(tmp_path):
+    """A recoverable capture error must not deadlock later capture requests."""
+    checker = FakeAgentChecker([False])
+    sched, state, _ = make_scheduler(tmp_path, agent_checker=checker)
+    state.start_session("agentic coding", now=T0, agentic=True)
+    capture_calls = 0
+
+    def fail_once_then_capture():
+        """Raise once, then return a valid image to prove lock recovery."""
+        nonlocal capture_calls
+        capture_calls += 1
+        if capture_calls == 1:
+            raise RuntimeError("camera unavailable")
+        return Image.new("RGB", (8, 8), "green")
+
+    sched.capture_fn = fail_once_then_capture
+    failed = sched._monitor_tick()
+
+    assert failed == {
+        "status": "capture_failed",
+        "error": "RuntimeError: camera unavailable",
+    }
+    assert not sched._capture_lock.locked()
+
+    recovered = sched._agent_watch_tick()
+
+    assert recovered["status"] == "idle"
+    assert capture_calls == 2
 
 
 def test_threads_start_and_stop_cleanly(tmp_path):
