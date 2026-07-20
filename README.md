@@ -21,7 +21,7 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - `HostsBlocker` writes both `127.0.0.1` and `::1` entries inside a
      marker-fenced `# >>> deepwork block start` section, then runs
      [`ipconfig /flushdns`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/ipconfig).
-   - Starting a session, changing break access, or changing agent state
+   - Starting a session, starting or stopping a break, or changing agent state
      reapplies the effective blocklist. `/disable` and normal interpreter
      shutdown remove the fenced section.
 
@@ -29,7 +29,8 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - While mode is ON or BREAK, the enforcer checks every
      `KILL_INTERVAL_S` seconds and kills exact, case-insensitive process-name
      matches for Discord, Telegram, and Steam.
-   - A break can spare selected app groups. Task-scoped website access and
+   - A break can spare selected app groups. Stopping it restores the normal
+     process targets for the next enforcer tick. Task-scoped website access and
      agentic waiting do **not** spare desktop apps.
 
 3. **Rolling progress evaluation**
@@ -50,6 +51,8 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
 
 4. **Spoken feedback**
    - Starting a session generates and queues an LLM-written good-luck message.
+     Starting or manually stopping a break queues a context-grounded
+     acknowledgment.
    - Each successful productivity evaluation queues exactly one utterance.
      An ordinary productive verdict speaks the vision model's reason directly.
      An off-track verdict or praise milestone first uses the text model to
@@ -71,12 +74,16 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      monitoring are active.
    - **OFF:** entering this mode through `/disable` clears the hosts section,
      and monitor/app enforcement ticks do no work.
-   - **BREAK:** monitoring pauses until the timed break expires. Task-required
-     sites remain open, and the break can add selected site/app exceptions.
+   - **BREAK:** monitoring pauses until the timed break expires or the user
+     selects **Stop break and resume work**. Task-required sites remain open,
+     and the break can add selected site/app exceptions.
    - A positive social-media break submitted through the provided form reserves
      its requested minutes immediately against the local-date daily allowance
      (120 minutes by default). A positive request beyond the remaining
-     allowance is refused. Away breaks do not spend that allowance.
+     allowance is refused. Manually stopping refunds unelapsed reserved minutes
+     and charges every started minute, rounded up and capped at the requested
+     duration. Natural expiry keeps the full reservation. Away breaks do not
+     spend that allowance.
    - Turning enforcement off requires the exact, case-sensitive phrase:
      `I will not stop cool deepwork session`.
 
@@ -134,7 +141,7 @@ flowchart TD
     Main --> Scheduler["Scheduler"]
     Main --> Store["ResultsStore"]
 
-    UI -- "start · break · agentic · disable" --> State
+    UI -- "start · start/stop break · agentic · disable" --> State
     UI -- "apply / clear" --> Hosts["HostsBlocker"]
     UI -- "GET /status" --> Status["state + RuntimeStatus snapshot"]
 
@@ -258,7 +265,9 @@ For a normal run:
    `http://127.0.0.1:<UI_PORT>`.
 3. Enter a topic, choose only task-required sites, optionally enable agentic
    mode, and select **Start session**.
-4. Use Ctrl+C for a normal shutdown so the registered cleanup can clear the
+4. Start a timed break when needed. While it is active, use **Stop break and
+   resume work** to end it early; the stop action needs no confirmation.
+5. Use Ctrl+C for a normal shutdown so the registered cleanup can clear the
    hosts section. Do not assume that closing or killing the console will run
    cleanup.
 
@@ -329,7 +338,10 @@ perform the strict task/preset validation. A forged request can therefore
 submit an invalid duration or kind; unknown break keys have no effect rather
 than producing an error. Use a positive duration, kind `away` or
 `social_media`, the site keys above, and app keys `discord`, `telegram`, and
-`steam`.
+`steam`. `POST /break/stop` has no form fields and is safe to repeat after the
+break has already ended. A manual social-break stop bills elapsed started
+minutes and records requested, elapsed, charged, and refunded values in the
+session JSONL event.
 
 ## Data, privacy, and cost
 
@@ -375,9 +387,12 @@ administrator access, an API call, capture hardware, or audio playback.
    the actual browser because browser-level resolution and caches can differ.
 5. Launch Discord or Steam; an exact configured process should be terminated
    on an enforcement tick.
-6. Start a one-minute social break allowing `reddit`; confirm the reservation
-   is deducted immediately, monitoring pauses, and blocking returns after
-   expiry.
+6. Start a ten-minute social break allowing `reddit`; confirm the full
+   reservation is deducted immediately and monitoring pauses. Stop it after a
+   few seconds; confirm one minute remains charged, the other nine are
+   refunded, `reddit` is re-blocked, monitoring resumes, and a return-to-work
+   message is spoken. Also let a later one-minute break expire and confirm its
+   full reservation remains charged.
 7. Submit a wrong disable phrase and confirm HTTP 403/state remains ON; submit
    the exact phrase and confirm the fenced hosts section is removed.
 8. Run `uv run python main.py --smoke` and inspect the newest files under
