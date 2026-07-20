@@ -79,23 +79,51 @@ def build_prompt(kind: str, **context) -> str:
 
 
 class MessageGenerator:
-    def __init__(self, client, model: str, store: ResultsStore):
+    def __init__(
+        self,
+        client,
+        model: str,
+        store: ResultsStore,
+        reasoning_effort: str = "xhigh",
+    ):
         self.client = client                      # openai.OpenAI or test fake
         self.model = model
         self.store = store
+        self.reasoning_effort = reasoning_effort
 
     def generate(self, kind: str, **context) -> str:
         """Build the prompt for `kind`, call the text model, log + persist the
         full exchange, and return the sentence to speak."""
         prompt = build_prompt(kind, **context)
-        log.info("message prompt (%s): %s", kind, prompt)   # full prompt, uncut
+        # Log the complete request prompt and active quality settings in one
+        # timestamped record; the logging formatter supplies the timestamp.
+        log.info(
+            "message request (%s): model=%s reasoning=%s prompt=%s",
+            kind,
+            self.model,
+            self.reasoning_effort,
+            prompt,
+        )
         # responses.create is the current plain-text generation call;
+        # reasoning.effort is the documented quality control, while
         # output_text concatenates the model's text parts:
+        # https://developers.openai.com/api/docs/guides/reasoning#get-started-with-reasoning
         # https://github.com/openai/openai-python#usage
-        response = self.client.responses.create(model=self.model, input=prompt)
+        response = self.client.responses.create(
+            model=self.model,
+            reasoning={"effort": self.reasoning_effort},
+            input=prompt,
+        )
         text = response.output_text.strip()
         log.info("message output (%s): %s", kind, text)     # full output, uncut
-        self.store.save_llm_exchange("message",
-                                     {"model": self.model, "kind": kind, "input": prompt},
-                                     response.model_dump())
+        self.store.save_llm_exchange(
+            "message",
+            {
+                "model": self.model,
+                "reasoning": {"effort": self.reasoning_effort},
+                "kind": kind,
+                "input": prompt,
+            },
+            response.model_dump(),
+        )
         return text

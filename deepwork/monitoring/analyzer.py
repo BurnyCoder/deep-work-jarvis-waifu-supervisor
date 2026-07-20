@@ -90,27 +90,38 @@ class AgentActivityVerdict(BaseModel):
 class AgentActivityChecker:
     """One-capture vision check: is the AI agent on screen still busy?"""
 
-    def __init__(self, client, model: str, store: ResultsStore):
+    def __init__(
+        self,
+        client,
+        model: str,
+        store: ResultsStore,
+        reasoning_effort: str = "xhigh",
+    ):
         self.client = client                      # openai.OpenAI or test fake
         self.model = model
         self.store = store
+        self.reasoning_effort = reasoning_effort
 
     def check(self, path: Path) -> AgentActivityVerdict:
         # Same responses.parse structured-output call as the productivity
-        # analyzer, but a single low-detail image (85 tokens) per poll:
+        # analyzer, but a single low-detail image per poll. Responses nests
+        # the explicitly selected reasoning effort under `reasoning`:
         # https://developers.openai.com/api/docs/guides/structured-outputs
+        # https://developers.openai.com/api/docs/guides/reasoning#get-started-with-reasoning
         user_content = [
             {"type": "input_text", "text": "Current capture of all monitors follows."},
             {"type": "input_image", "image_url": _image_to_data_url(path),
              "detail": "low"},
         ]
         request = {"model": self.model,
+                   "reasoning": {"effort": self.reasoning_effort},
                    "input": [{"role": "system", "content": AGENT_WATCH_PROMPT},
                              {"role": "user", "content": user_content}],
                    "text_format": AgentActivityVerdict}
         log.info(
-            "agent-watch request: model=%s capture=%s system=%r user=%r",
+            "agent-watch request: model=%s reasoning=%s capture=%s system=%r user=%r",
             self.model,
+            self.reasoning_effort,
             path.name,
             AGENT_WATCH_PROMPT,
             user_content[0]["text"],
