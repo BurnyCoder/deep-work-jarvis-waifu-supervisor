@@ -201,12 +201,18 @@ def test_agent_activity_checker_request_shape_and_persistence(tmp_path):
     verdict = AgentActivityVerdict(agent_working=True, reason="tokens streaming")
     client = FakeClient(verdict)
     store = ResultsStore(tmp_path)
-    checker = AgentActivityChecker(client=client, model="test-model", store=store)
+    checker = AgentActivityChecker(
+        client=client,
+        model="test-model",
+        store=store,
+        reasoning_effort="xhigh",
+    )
 
     result = checker.check(save_capture(store))
     assert result.agent_working is True
     kwargs = client.responses.last_kwargs
     assert kwargs["model"] == "test-model"
+    assert kwargs["reasoning"] == {"effort": "xhigh"}
     assert kwargs["text_format"] is AgentActivityVerdict
     user_content = kwargs["input"][-1]["content"]
     images = [c for c in user_content if c["type"] == "input_image"]

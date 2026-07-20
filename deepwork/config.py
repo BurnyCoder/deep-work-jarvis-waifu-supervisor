@@ -85,15 +85,18 @@ class Config:
     # Frozen dataclass = read-only after construction, safe to share across
     # threads without locks (https://docs.python.org/3/library/dataclasses.html).
     openai_api_key: str
-    # GPT-5.6 Sol is OpenAI's flagship tier; xhigh is explicit so upgrades do
-    # not silently inherit a different reasoning default:
+    # Every text/image Responses workload defaults to GPT-5.6 Sol at xhigh;
+    # keeping each field separate still lets .env tune one workload without
+    # silently changing the others:
     # https://developers.openai.com/api/docs/guides/latest-model
     vision_model: str = "gpt-5.6-sol"
     progress_reasoning_effort: str = "xhigh"
-    # The frequent agent-busy poll and short message generation stay on the
-    # efficient mini tier; only the nuanced progress comparison needs Sol.
-    agent_vision_model: str = "gpt-5.4-mini"
-    text_model: str = "gpt-5.4-mini"
+    agent_vision_model: str = "gpt-5.6-sol"
+    agent_reasoning_effort: str = "xhigh"
+    text_model: str = "gpt-5.6-sol"
+    text_reasoning_effort: str = "xhigh"
+    # Speech remains on an audio-output model because Sol outputs text only:
+    # https://developers.openai.com/api/docs/models/gpt-5.6-sol
     tts_engine: str = "openai"               # "openai" | "pyttsx3" fallback
     tts_model: str = "gpt-4o-mini-tts"       # https://developers.openai.com/api/docs/guides/text-to-speech
     tts_voice: str = "coral"                 # one of the 13 built-in voices
@@ -127,7 +130,15 @@ def load_config(env: Mapping[str, str]) -> Config:
             "AGENT_VISION_MODEL",
             Config.agent_vision_model,
         ),
+        agent_reasoning_effort=env.get(
+            "AGENT_REASONING_EFFORT",
+            Config.agent_reasoning_effort,
+        ),
         text_model=env.get("TEXT_MODEL", Config.text_model),
+        text_reasoning_effort=env.get(
+            "TEXT_REASONING_EFFORT",
+            Config.text_reasoning_effort,
+        ),
         tts_engine=env.get("TTS_ENGINE", Config.tts_engine),
         tts_model=env.get("TTS_MODEL", Config.tts_model),
         tts_voice=env.get("TTS_VOICE", Config.tts_voice),
