@@ -132,6 +132,12 @@
 
   function renderConditions(status) {
     const br = status.break;
+    const stopBreakForm = byId("stop-break-form");
+    if (stopBreakForm) {
+      // The server renders the initial state; polling also hides the control
+      // when the watchdog expires a break without a page navigation.
+      stopBreakForm.classList.toggle("is-hidden", !br);
+    }
     if (br) {
       setText("break-state", br.purpose || "Active break");
     } else {

@@ -87,6 +87,8 @@ Implementation details live under `deepwork/`:
   allowance accounting, while unknown keys have no policy effect.
 - Task-required sites stay monitored, spend no allowance, and never spare apps.
 - Positive social-break minutes are reserved in full when the break starts.
+  Manual stop charges each started minute and refunds the unelapsed reservation
+  to the break's starting local date; natural expiry consumes the full amount.
 - Agent-busy mode empties only the website blocklist. App killing continues.
   The productivity monitor pauses until a later watcher verdict marks the
   agent idle.

@@ -43,6 +43,9 @@ def test_build_prompt_covers_all_message_kinds():
     p = build_prompt("break_ack", purpose="coffee", minutes=10,
                      session_context=CTX)
     assert "coffee" in p and "10" in p
+    p = build_prompt("break_end_ack", purpose="coffee", charged_minutes=2,
+                     session_context=CTX)
+    assert "coffee" in p and "2" in p and "back" in p.lower()
 
 
 def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
@@ -54,6 +57,8 @@ def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
                         ("praise", {"topic": "t", "reason": "r",
                                     "observed": "VS Code running tests"}),
                         ("break_ack", {"purpose": "p", "minutes": 5}),
+                        ("break_end_ack", {"purpose": "p",
+                                           "charged_minutes": 2}),
                         ("agent_running", {"reason": "spinner visible"}),
                         ("agent_done", {"reason": "response finished"})]:
         p = build_prompt(kind, session_context=CTX, **extra)
