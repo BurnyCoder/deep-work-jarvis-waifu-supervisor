@@ -81,6 +81,9 @@ Implementation details live under `deepwork/`:
   completes around the fifth tick.
 - Scheduler intervals are fixed delays after a tick finishes, not wall-clock
   schedules. Starting a session does not reset their countdowns.
+- Productivity and agent-watch ticks share one capture lock. Hold it only
+  around the injected capture callable; persistence, model calls, state
+  mutation, and speech must remain outside it.
 - Task and preset site keys are strictly validated and fail before state or
   hosts mutation. The break route trusts HTML duration/type constraints and
   does not strictly validate CSV keys; forged negative social minutes corrupt
