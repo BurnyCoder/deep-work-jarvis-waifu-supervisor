@@ -13,7 +13,10 @@ def test_defaults_when_env_empty():
     assert cfg.openai_api_key == "sk-test"
     assert cfg.vision_model == "gpt-5.6-sol"
     assert cfg.progress_reasoning_effort == "xhigh"
-    assert cfg.agent_vision_model == "gpt-5.4-mini"
+    assert cfg.agent_vision_model == "gpt-5.6-sol"
+    assert cfg.agent_reasoning_effort == "xhigh"
+    assert cfg.text_model == "gpt-5.6-sol"
+    assert cfg.text_reasoning_effort == "xhigh"
     assert cfg.capture_interval_s == 300          # 5-minute default cadence
     assert cfg.progress_window_captures == 5      # rolling 25-minute context
     assert cfg.kill_interval_s == 3               # app-kill sweep period
@@ -31,6 +34,9 @@ def test_env_overrides_win():
         "VISION_MODEL": "some-model",
         "PROGRESS_REASONING_EFFORT": "high",
         "AGENT_VISION_MODEL": "agent-model",
+        "AGENT_REASONING_EFFORT": "medium",
+        "TEXT_MODEL": "text-model",
+        "TEXT_REASONING_EFFORT": "low",
         "CAPTURE_INTERVAL_S": "60",
         "PROGRESS_WINDOW_CAPTURES": "2",
         "TTS_ENGINE": "pyttsx3",
@@ -39,6 +45,9 @@ def test_env_overrides_win():
     assert cfg.vision_model == "some-model"
     assert cfg.progress_reasoning_effort == "high"
     assert cfg.agent_vision_model == "agent-model"
+    assert cfg.agent_reasoning_effort == "medium"
+    assert cfg.text_model == "text-model"
+    assert cfg.text_reasoning_effort == "low"
     assert cfg.capture_interval_s == 60
     assert cfg.progress_window_captures == 2
     assert cfg.tts_engine == "pyttsx3"
