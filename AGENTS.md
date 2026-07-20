@@ -1,141 +1,199 @@
-# AGENTS.md — orientation for AI agents (and humans) working on this repo
+# AGENTS.md — repository operating guide
 
-## What this is
+## Product and source of truth
 
-A Windows 11 productivity enforcement app: hosts-file website blocking,
-distraction-app killing, five-minute rolling AI screen/webcam progress
-monitoring with OpenAI vision, five-minute spoken LLM feedback, ON/OFF/BREAK
-modes with a daily social-media allowance, a confirmation-phrase gate, a local
-Flask control panel, task-scoped website access, and results storage. Python
-3.13, uv-managed local `.venv`.
+This Windows 11 productivity-enforcement app combines explicit hosts entries,
+exact-name process killing, rolling OpenAI screen/webcam evaluation, spoken
+feedback, session modes/exceptions, a loopback dashboard, and local storage.
 
-## Commands
+When documentation and implementation disagree, verify behavior in this order:
+
+1. Executable code and focused tests.
+2. `.env.example`, `pyproject.toml`, and `uv.lock`.
+3. `README.md`, this file, and other prose.
+4. Current authoritative upstream documentation for external behavior.
+
+Do not preserve a claim merely because an older README or comment says it.
+
+## Working commands
+
+Run from the repository root with the uv-managed local `.venv`:
 
 ```powershell
-uv sync                          # install deps into ./.venv
-uv run pytest                    # full unit suite (no admin, no API key, no hardware)
-uv run python main.py            # full app: UAC elevation + hosts writes + web UI
-uv run python main.py --dry-hosts  # full app, hosts writes only logged (no admin)
-uv run python main.py --smoke    # one real capture→vision→TTS cycle, then exit
+uv sync --locked                   # reproduce the checked-in lockfile
+uv sync                            # update after an intentional dependency edit
+uv run pytest                      # complete fake-backed unit suite
+uv run python main.py --help       # CLI surface
+uv run python main.py --dry-hosts  # UI + scheduler; no UAC/hosts writes
+uv run python main.py --smoke      # one real capture/vision/speech tick
+uv run python main.py              # UAC + real hosts enforcement + UI
 ```
 
-`Start Deep Work.bat` (repo root) is the double-click launcher: self-elevates
-via UAC, checks uv exists, opens the browser panel, runs `uv run python main.py`.
+Unit tests need no admin, API, capture, or audio; `--smoke` uses the last three.
+After Start, `--dry-hosts` still kills apps, captures, calls APIs, stores, and speaks.
 
-## Architecture (wrapper → phases → modules)
+`Start Deep Work.bat` self-elevates and runs the app, but its browser helper is
+fixed at `5599` while the app defaults to `5000`. Keep both values aligned.
 
-`main.py` is a table of contents: elevation → config+logging → blocker
-selection → object wiring → atexit safety → run. All logic lives in
-`deepwork/`:
+## Wrapper and module ownership
 
-| Module | Responsibility |
+`main.py` must remain the readable wrapper:
+
+```text
+arguments → elevation → config/logging → blocker selection
+          → collaborator wiring → cleanup registration → run mode
+```
+
+Implementation details live under `deepwork/`:
+
+| Module | Current responsibility |
 |---|---|
-| `config.py` | `.env` → frozen `Config`; site/app group tables (`SITE_DOMAINS`, `APP_PROCESSES`) |
-| `site_access.py` | shared site labels, strict key normalization, `projects.json` loading, preset + one-off task-access union |
-| `logging_setup.py` | root logger → timestamped file in `logs/` + terminal, utf-8 |
-| `state.py` | thread-safe `SessionState`: modes, task/preset access, breaks, allowance, current-session verdict history, enforcement/status snapshots, phrase gate |
-| `storage.py` | `results/` writers: capture JPEGs, uncut LLM JSON, session JSONL, `state.json` |
-| `scheduler.py` | enforcer/monitor/agent-watch threads; capture→rolling analysis→one utterance; publishes loop results to runtime telemetry |
-| `runtime_status.py` | locked, JSON-safe scheduler cadence/phase/last-next-run/result/error telemetry |
-| `blocking/admin.py` | `IsUserAnAdmin` check + `ShellExecuteW("runas")` self-relaunch |
-| `blocking/hosts_blocker.py` | marker-fenced idempotent hosts edits + `ipconfig /flushdns`; `DryRunBlocker` for dev |
-| `blocking/app_killer.py` | psutil sweep killing target process names |
-| `monitoring/screen_capture.py` | mss per-monitor grabs → PIL |
-| `monitoring/webcam_capture.py` | OpenCV `CAP_DSHOW` single frame, non-fatal on failure |
-| `monitoring/stitcher.py` | labeled vertical composite of all captures |
-| `monitoring/analyzer.py` | topic + sanctioned task-site context + newest 1–N captures in a bounded rolling progress window → `responses.parse` → `ProductivityVerdict`; `AgentActivityChecker` single-capture "is the AI agent busy?" poll for agentic mode |
-| `feedback/messages.py` | LLM-written good-luck / nudge / praise / break-ack sentences |
-| `feedback/tts.py` | OpenAI TTS→WAV→winsound or pyttsx3; single `SpeechQueue` worker |
-| `webui/app.py` + `status.py` | Flask routes and additive no-cache `/status` payload composition |
-| `webui/templates/` + `static/` | status-first responsive dashboard; task-site checkbox grid, safe three-second polling, current-session evaluation timeline |
+| `config.py` | Frozen `.env`-derived `Config`; hardcoded site/app policy tables |
+| `site_access.py` | Site labels; strict task/preset key normalization; `projects.json` loading and union |
+| `logging_setup.py` | Timestamped UTF-8 file and terminal root logging |
+| `state.py` | Locked modes, task access, breaks, allowance, streak, verdict history, agent state, status snapshots |
+| `storage.py` | Capture JPEGs, LLM exchange JSON, session JSONL, and persisted allowance/topic state |
+| `runtime_status.py` | Locked JSON-safe fixed-delay loop cadence, phase, result, countdown, and error state |
+| `scheduler.py` | Enforcer, productivity-monitor, and agent-watch daemon loops |
+| `blocking/admin.py` | Windows admin test and `runas` self-relaunch |
+| `blocking/hosts_blocker.py` | Marker-fenced hosts replacement/removal and DNS-cache flush; dry-run adapter |
+| `blocking/app_killer.py` | Case-insensitive exact process-name termination with psutil |
+| `monitoring/screen_capture.py` | One Pillow image per physical monitor via mss |
+| `monitoring/webcam_capture.py` | Optional DirectShow webcam frame; failure returns `None` |
+| `monitoring/stitcher.py` | Labeled vertical monitor/webcam composite |
+| `monitoring/analyzer.py` | Rolling 1..N structured productivity verdict and single-capture agent-activity verdict |
+| `feedback/messages.py` | Context-grounded good-luck, nudge, praise, break, and agent-transition text |
+| `feedback/tts.py` | OpenAI WAV or pyttsx3 speaker behind one FIFO worker |
+| `webui/app.py` | Flask factory and state-changing routes |
+| `webui/status.py` | Composition of state and scheduler snapshots |
+| `webui/templates/`, `static/` | Status-first dashboard and safe non-overlapping polling |
 
-## Conventions
+## Behavioral invariants
 
-- **TDD**: every module has a test file in `tests/`; hardware and network are
-  faked (see `FakeClient`, `FakeBlocker`, `capture_fn` injection patterns).
-- **Dependency injection everywhere**: paths, clients, clocks (`now=`), and
-  callables are constructor/method parameters — never patched globals.
-- **Comments cite sources**: non-obvious lines link the doc/guide they came
-  from; keep that up when editing.
-- **Feature branches**: work on `feat/<name>`, merge to `master` with
-  `--no-ff`; one meaningful unit per commit.
-- **Secrets**: `.env` is gitignored and must never be committed; `.env.example`
-  documents every variable.
-- **Full LLM logging**: every prompt and output is logged uncut to `logs/`
-  and persisted as JSON under `results/llm/` — preserve this invariant.
+- A new session replaces one-off task sites and resets the latest verdict,
+  timeline, break, streak, and agent state. Its next monitor tick resets the
+  analyzer window.
+- OFF and BREAK preserve the in-memory timeline; restart does not. Only
+  allowance usage and topic history persist.
+- Every successful productivity capture is evaluated immediately against the
+  available rolling window. With five captures at a five-minute sampling
+  interval, oldest-to-newest visual span is 20 minutes; the first full window
+  completes around the fifth tick.
+- Scheduler intervals are fixed delays after a tick finishes, not wall-clock
+  schedules. Starting a session does not reset their countdowns.
+- Task and preset site keys are strictly validated and fail before state or
+  hosts mutation. The break route trusts HTML duration/type constraints and
+  does not strictly validate CSV keys; forged negative social minutes corrupt
+  allowance accounting, while unknown keys have no policy effect.
+- Task-required sites stay monitored, spend no allowance, and never spare apps.
+- Positive social-break minutes are reserved in full when the break starts.
+- Agent-busy mode empties only the website blocklist. App killing continues.
+  The productivity monitor pauses until a later watcher verdict marks the
+  agent idle.
+- Shared scheduler/Flask state must stay behind the existing locks.
+- `/status` must remain JSON-safe, additive, and `Cache-Control: no-store`.
+  Render model text as text, never trusted HTML.
+- The Flask server stays on `127.0.0.1`. It has no authentication or CSRF
+  defense and must not be exposed as a production network service.
 
-## Gotchas
+## LLM, logging, storage, and privacy invariants
 
-- Port 5000 can be shadowed by `wslrelay` on Windows — `UI_PORT` lives in `.env`.
-- opencv-python wheels for Python 3.14 are unreliable; `.python-version` pins 3.13.
-- pyttsx3 engines are re-created per utterance (reuse bug nateshmbhat/pyttsx3#193).
-- Browser "Secure DNS" (DoH) bypasses hosts blocking — see README caveats.
-- `SessionState` methods take `now: datetime` for testability; pass it in new code.
-- Task-site access is free productive-work access: it stays monitored, never
-  spends social-break minutes, and never spares desktop apps.
-- `projects.json` presets and one-off Start-form choices are unioned; a new
-  session resets one-off choices, and unknown site keys must fail closed.
+- Log every complete textual prompt and semantic model output to both terminal
+  and the timestamped run log; never slice or abbreviate them.
+- Persist each complete SDK response under `results/llm/`. For vision requests,
+  persist full text plus capture-file references instead of duplicating base64
+  image bytes.
+- Keep capture, exchange, session, and state artifacts under `results/`.
+- Screen and optional webcam images are sensitive and are uploaded to OpenAI
+  for vision requests. `pyttsx3` makes only speech playback offline.
+- `.env`, `logs/`, and `results/` remain gitignored. Never stage credentials or
+  runtime captures, even with a force-add.
+- Preserve the dashboard's AI-voice disclosure.
 
-# Rules to follow
+## Implementation rules
 
-Make the simplest possible actually practically functioning implementations of new features as a starter, not just demos.
+Before adding anything, ask:
 
-When figuring out a solution, search the web on how others do it and how to do it, including docs.
+- Does it need to exist?
+- Does the standard library or an established dependency already do it?
+- Can the design or line be simpler?
+- Can one readable reusable function replace duplication?
 
-The code should be modular and functions/classes abstract with implementation details hidden as you go deeper, split it into files, there should be one abstracted wrapper file that calls different clearly named readable phases as imported modular functions.
+Then follow these rules:
 
-Split it into modular files and directories as complexity grows.
+- Build the simplest practical, functioning implementation, not a throwaway
+  demo.
+- Keep the wrapper phase-oriented and hide details in clearly named modules.
+  Split files/directories only as complexity actually grows.
+- Reuse functions and policy tables; do not duplicate parsing, validation,
+  prompt, status, or persistence logic.
+- Use `.env` for runtime tunables, uv for dependency management and commands,
+  and the repository-local `.venv`.
+- Use TDD for behavior changes. Add the failing test first, implement the
+  smallest fix, then run the full suite.
+- Prefer dependency injection for clients, paths, clocks, and hardware/network
+  callables. Tests may monkeypatch narrow OS/library boundaries such as psutil
+  iteration or DNS flushing; do not claim that globals are never patched.
+- Add global-context and local-behavior comments to files, functions, and code
+  lines as requested by the project owner. Ground non-obvious external API and
+  platform behavior in current primary documentation links. Write comments
+  deliberately with the code; do not mass-generate them.
+- Search current library, language, platform, and upstream repository docs
+  before implementing unfamiliar behavior. Prefer official/primary sources and
+  verify copied API shapes against the installed versions.
+- Keep `README.md`, `AGENTS.md`, `.env.example`, architecture diagrams, setup,
+  usage, privacy notes, and caveats synchronized with behavior.
 
-Do not duplicate code, use reusable functions for various features, and call them, when possible.
+## Verification and review
 
-Add comprehensible timestamped logging, make sure all prompts and outputs are written to timestamped logs file and terminal realtime.
+For every change:
 
-Make sure all prompts and outputs from LLMs are written into logs without being cut off.
+1. Run focused tests during TDD.
+2. Run `uv run pytest`.
+3. Exercise the affected path as a user would. For capture/LLM/TTS changes,
+   run `uv run python main.py --smoke`; for UI/state changes, also exercise the
+   relevant Flask flow or full local app.
+4. Inspect the newest terminal/file logs and relevant `results/` artifacts.
+   Confirm prompts, outputs, stored records, and spoken behavior agree.
+5. Fix observed issues, rerun the affected path, and push the corrected
+   functional commit.
+6. Perform one bounded review pass covering correctness, security, privacy,
+   maintainability, tests, reliability, design, architecture, and unsupported
+   claims.
 
-Add comments to each file, function and line of code with local explanation and global context sections. Actually explain how the line does it. Don't generate them using scripts, edit each line using file edit tool. Search the web for context.
+Do not call a hardware-free unit run an end-to-end smoke test. Do not claim
+"flawless" behavior from tests that cannot observe Windows, devices, the
+network, or model nondeterminism.
 
-Make sure as many lines of code as possible are grounded in some library docs, guides on the internet, github repos, programming language docs, etc., and source link them in comments. Make sure to double-check the accuracy of your code while implementing code from these sources to minimize hallucinations.
+## GitHub workflow
 
-Use .env for config.
+- The existing remote is `BurnyCoder/jarvis-waifu-supervisor`; do not create a
+  duplicate or change visibility without explicit authorization.
+- Start changes from `master` on `feat/<name>`.
+- Preserve unrelated user work. Stage only intended files.
+- Split genuinely independent functional units into meaningful commits; do not
+  manufacture commit splits for one inseparable documentation correction.
+- Push the feature branch, open a pull request, review it, and merge it to
+  `master` with a merge commit (`--no-ff`) once checks pass. Complete those
+  steps without delegating routine repository operations back to the user.
+- Never commit secrets. Confirm important source, tests, configuration
+  examples, and docs are tracked before merging.
 
-Use uv.
+## Current gotchas
 
-Use uv unit.
-
-Use local venv in this folder.
-
-Use the current working directory.
-
-Make sure all important details are in README.md.
-
-Make sure README.md and AGENTS.md is updated according to the codebase.
-
-Make sure that how to install, setup and use everything is included in README.md.
-
-Make sure that the github repo includes all information to make it replicable for anyone cloning the repo.
-
-Add documentation.
-
-Add a graph-based visualization of the architecture to README.md .
-
-Create github repo on my account in terminal.
-
-Split commits into meaningful functional units.
-
-Create new branches, pull requests, and merges, for features, on your own, instead of the user. Merge PRs on your own, always.
-
-Do test driven development.
-
-When testing, run the whole pipeline like a user would. Make sure to inspect logs and fix issues if you find any in the logs or overall. Keep running and fixing until it all works flawlessly in logs and the output makes sense. Outputs from LLMs should correspond to README descriptions, and to prompts in code. After each fix, push it to github, run, repeat, look for fixes, fix, repeat, continue until it all works flawlessly in logs and the output makes sense.
-
-Do code review with correctness, security, maintainability, tests, reliability, design and architecture review. Double-check for hallucinations. Do not loop in code review for too long, just do one pass.
-
-Before writing anything, ask yourself:
-- does it need to exist
-- does standard library or some library or github repo already do it
-- can it be simpler
-- can it be one readable line
-
-Make sure to NOT push credentials to GitHub.
-
-Make sure important files are pushed.
+- During the 2026-07-20 audit, `wslrelay` occupied port `5000` on the
+  development machine. `UI_PORT` can move the app, but the batch launcher's
+  hardcoded browser URL must be changed separately.
+- `.python-version` selects Python 3.13. Do not invent a Python 3.14 wheel
+  limitation without checking current package indexes.
+- The pyttsx3 adapter constructs an engine per utterance to avoid the linked
+  upstream reuse issue in `feedback/tts.py`.
+- Browser-level DoH behavior is not uniform. Windows honors its hosts file in
+  the system resolver, while software with its own resolver can bypass that
+  path; keep README wording conditional.
+- Hard termination can skip `atexit`; manual fenced-section cleanup remains
+  necessary.
+- Hosts policy is explicit, not wildcard-based. Substack author subdomains and
+  other unlisted alternate domains are not covered.
+- Low-detail stitched vision can miss small screen text. Never present model
+  verdicts as ground truth.
