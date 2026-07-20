@@ -7,6 +7,7 @@
 # Enum gives named, identity-comparable modes (Mode.ON is Mode.ON):
 # https://docs.python.org/3/library/enum.html
 import enum
+import math
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -38,9 +39,23 @@ class BreakInfo:
     # One active break: what for, which kind, until when, what it unlocks.
     purpose: str                                  # user's stated reason
     kind: str                                     # "social_media" | "away"
+    start_time: datetime                          # local instant reservation began
     end_time: datetime                            # absolute expiry instant
+    requested_minutes: int                        # whole minutes reserved up front
     allowed_sites: tuple[str, ...] = ()           # SITE_DOMAINS keys unblocked
     allowed_apps: tuple[str, ...] = ()            # APP_PROCESSES keys spared
+
+
+@dataclass(frozen=True)
+class BreakStopResult:
+    """Immutable accounting record returned after a user stops a break."""
+
+    purpose: str                                  # reason retained for event/TTS
+    kind: str                                     # determines allowance accounting
+    requested_minutes: int                        # original reservation
+    elapsed_seconds: int                          # elapsed time capped at duration
+    charged_minutes: int                          # every started minute counts
+    refunded_minutes: int                         # social reservation returned
 
 
 @dataclass
@@ -166,23 +181,84 @@ class SessionState:
             # https://docs.python.org/3/library/datetime.html#timedelta-objects
             self.current_break = BreakInfo(
                 purpose=purpose, kind=kind,
+                start_time=now,
                 end_time=now + timedelta(minutes=minutes),
+                requested_minutes=minutes,
                 allowed_sites=tuple(allowed_sites or ()),
                 allowed_apps=tuple(allowed_apps or ()),
             )
             self.mode = Mode.BREAK
             return True, ""
 
+    def _restore_after_break(self) -> None:
+        """Restore focus-mode fields while the caller holds ``self._lock``."""
+
+        self.current_break = None                  # remove temporary exceptions
+        self.mode = Mode.ON                        # resume the active session
+        self.productive_streak_min = 0             # restart post-break streak
+
     def end_break_if_due(self, now: datetime | None = None) -> bool:
         # Called by the enforcer watchdog every few seconds; True = restored.
         now = now or datetime.now()
         with self._lock:
             if self.mode is Mode.BREAK and self.current_break and now >= self.current_break.end_time:
-                self.current_break = None
-                self.mode = Mode.ON               # auto-restore (requirement 5)
-                self.productive_streak_min = 0    # streak restarts after break
+                # Expiry consumes the full up-front reservation, so only the
+                # shared mode transition is needed here.
+                self._restore_after_break()
                 return True
             return False
+
+    def stop_break(self, now: datetime | None = None) -> BreakStopResult | None:
+        """Stop the active break and refund unelapsed social-media minutes."""
+
+        current = now or datetime.now()
+        with self._lock:
+            if self.mode is not Mode.BREAK or self.current_break is None:
+                # A stale browser click can race the expiry watchdog; treating
+                # it as a no-op keeps the POST idempotent and side-effect free.
+                return None
+
+            active_break = self.current_break
+            requested_minutes = max(0, active_break.requested_minutes)
+            # datetime subtraction yields timedelta; total_seconds preserves
+            # sub-second precision before the explicit started-minute rounding:
+            # https://docs.python.org/3/library/datetime.html#datetime.timedelta.total_seconds
+            raw_elapsed_seconds = max(
+                0.0,
+                (current - active_break.start_time).total_seconds(),
+            )
+            capped_elapsed_seconds = min(
+                raw_elapsed_seconds,
+                requested_minutes * 60,
+            )
+            # ceil implements the chosen "every started minute counts" rule:
+            # https://docs.python.org/3.13/library/math.html#math.ceil
+            charged_minutes = min(
+                requested_minutes,
+                math.ceil(capped_elapsed_seconds / 60),
+            )
+            refunded_minutes = 0
+            if active_break.kind == "social_media":
+                refunded_minutes = requested_minutes - charged_minutes
+                allowance_date = active_break.start_time.date().isoformat()
+                reserved_total = self.social_used_by_date.get(allowance_date, 0)
+                # Clamp protects an already-corrupt legacy state value from a
+                # refund making the daily usage even more invalid.
+                self.social_used_by_date[allowance_date] = max(
+                    0,
+                    reserved_total - refunded_minutes,
+                )
+
+            result = BreakStopResult(
+                purpose=active_break.purpose,
+                kind=active_break.kind,
+                requested_minutes=active_break.requested_minutes,
+                elapsed_seconds=math.ceil(capped_elapsed_seconds),
+                charged_minutes=charged_minutes,
+                refunded_minutes=refunded_minutes,
+            )
+            self._restore_after_break()
+            return result
 
     # ---------- effective enforcement views ----------
 
