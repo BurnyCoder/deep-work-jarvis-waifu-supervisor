@@ -1,263 +1,433 @@
-# Deep Work: Windows Productivity Enforcement App
+# Deep Work: Windows Productivity Enforcement
 
-Holds you to deep focus on Windows 11: blocks distracting websites, kills
-distraction apps, compares a rolling history of your screens + webcam for
-visible progress, and speaks a fresh encouragement or gentle nudge every five
-minutes, all controlled from a readable realtime local dashboard.
+Deep Work is a personal Windows 11 focus app. During a focused session it
+blocks configured website domains through the Windows hosts file, terminates
+named distraction apps, periodically captures every monitor and an optional
+webcam frame, asks an OpenAI vision model for a structured productivity
+verdict, and speaks feedback. A local Flask dashboard controls the session and
+shows current state and scheduler health.
 
-## Features
+This is an enforcement aid, not a security boundary. The blocklist is explicit,
+the AI can be wrong, and anyone with administrator access can undo the policy.
 
-1. **Website blocking**: Reddit, YouTube, Twitter/X, Discord, Hacker News,
-   LinkedIn, Bluesky, Substack, Facebook, LessWrong, EA Forum and 4chan (plus
-   known variants like `old.reddit.com`, `youtu.be`, `x.com`) are redirected
-   to `127.0.0.1` via the Windows hosts file, IPv4 and IPv6, inside a fenced
-   `# >>> deepwork block` section that is cleanly removed on OFF/exit.
-2. **App killing**: a background sweep terminates Discord, Telegram and
-   Steam every 3 seconds while enforcement is on.
-3. **Rolling progress monitoring**: every 5 minutes all monitors and the
-   webcam are captured and stitched into one labeled image. Every capture
-   triggers an OpenAI vision evaluation over the newest 1–5 captures, ordered
-   oldest to newest; after warm-up, this is always the latest 25-minute
-   window. The coach compares documents, code, tests, research and other
-   visible task state for real progress. A full on-topic window with no
-   meaningful progress gets a gentle stalled-work nudge, while plausible
-   reading/thinking work is not rejected merely for looking static. Websites
-   explicitly required for the task are judged by whether their visible use
-   advances that task, not treated as automatically productive or distracting.
-4. **Spoken feedback every 5 minutes**: an immediate LLM-written good-luck
-   message starts the session, then every successful monitoring evaluation
-   produces exactly one spoken update. Ordinary productive checks speak the
-   fresh vision reason directly; distraction or stalled work gets a
-   context-rich nudge; every 30 consecutive productive minutes gets praise.
-   Voice pauses while OFF, on BREAK, or while an agentic coding agent is busy.
-   OpenAI TTS voices are AI-generated, not human. Offline `pyttsx3` remains
-   available via `TTS_ENGINE=pyttsx3`.
-5. **Modes**: **ON** (everything enforced), **OFF** (nothing), **BREAK**
-   (timed, auto-restoring; you state what it's for and how long, TTS
-   acknowledges). Breaks can allow only specific sites/apps
-   (`reddit,discord`) while everything else stays blocked, and come in two
-   kinds: *social media* (draws from a **2 h/day allowance**, refused once
-   exhausted) or *away from computer*. When starting focused work, you can
-   select any blocked website groups genuinely required for that task; only
-   those sites open, normal monitoring continues, and no break minutes are
-   charged. Optional `projects.json` presets add reusable site selections.
-6. **Confirmation phrase** : turning enforcement off requires typing exactly
-   `I will not stop cool deepwork session`.
-7. **Realtime web dashboard**: `http://127.0.0.1:5000` by default (port via
-   `UI_PORT`) puts live status before the controls. It shows mode, topic,
-   session duration, monitoring and evaluation countdowns, streak and social
-   allowance, task-required website access, current-session evaluation
-   history, break/agent state, active blocking counts, and scheduler health.
-   Each evaluation keeps its complete reason visible and its full
-   screen/webcam observation in an expandable disclosure.
-8. **Agentic engineering mode**: tick *agentic engineering* when starting a
-   session (or toggle mid-session). A vision check every 60 s
-   (`AGENT_CHECK_INTERVAL_S`) watches your screens for an AI coding agent
-   (Claude Code, Cursor, terminal agents) that is actively working — spinner,
-   streaming output, running tools. While it works, **everything unblocks**
-   so you can scroll Twitter guilt-free; the moment it finishes or waits for
-   your input, the session's normal blocklist snaps back while explicitly
-   task-required sites remain open, and the voice calls you over to review.
-   Waiting time is free (no 2 h allowance drain), and productivity nudges
-   pause while the agent runs. Cost: one low-detail capture per minute, a few
-   cents per workday.
-9. **Results storage**: `results/captures/*.jpg` (stitched images),
-   `results/llm/*.json` (full, uncut LLM request/response pairs),
-   `results/sessions/*.jsonl` (timestamped event log), `results/state.json`
-   (allowance + topic history, survives restarts). Runtime logs stream to the
-   terminal and `logs/deepwork_*.log` simultaneously.
+## Implemented behavior
+
+1. **Website blocking**
+   - The configured groups are Reddit, YouTube, Twitter/X, Discord, Hacker
+     News, LinkedIn, Bluesky, Substack, Facebook, LessWrong, EA Forum, and
+     4chan.
+   - `deepwork/config.py` expands those groups into explicit hostnames. There
+     is no wildcard matching.
+   - `HostsBlocker` writes both `127.0.0.1` and `::1` entries inside a
+     marker-fenced `# >>> deepwork block start` section, then runs
+     [`ipconfig /flushdns`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/ipconfig).
+   - Starting a session, changing break access, or changing agent state
+     reapplies the effective blocklist. `/disable` and normal interpreter
+     shutdown remove the fenced section.
+
+2. **Distraction-app termination**
+   - While mode is ON or BREAK, the enforcer checks every
+     `KILL_INTERVAL_S` seconds and kills exact, case-insensitive process-name
+     matches for Discord, Telegram, and Steam.
+   - A break can spare selected app groups. Task-scoped website access and
+     agentic waiting do **not** spare desktop apps.
+
+3. **Rolling progress evaluation**
+   - On each active monitor tick, `mss` captures every physical monitor.
+     OpenCV contributes one webcam frame when camera capture succeeds; webcam
+     failure is non-fatal.
+   - The images are stacked into one timestamped, labeled JPEG.
+   - Every successful capture immediately triggers one Responses API
+     evaluation over the newest one through
+     `PROGRESS_WINDOW_CAPTURES` stitched captures, oldest first.
+   - With the defaults, the fifth successful tick is the first full
+     five-capture window. Five captures sampled five minutes apart span about
+     20 minutes from the oldest image to the newest, although that first full
+     window completes about 25 minutes after an uninterrupted loop begins.
+   - Warm-up prompts forbid declaring a stall merely because fewer than five
+     captures exist. A full window can be judged stalled, while the prompt
+     explicitly allows plausible reading, thinking, calls, and builds.
+
+4. **Spoken feedback**
+   - Starting a session generates and queues an LLM-written good-luck message.
+   - Each successful productivity evaluation queues exactly one utterance.
+     An ordinary productive verdict speaks the vision model's reason directly.
+     An off-track verdict or praise milestone first uses the text model to
+     generate a context-grounded nudge or congratulations.
+   - At the default cadence, each productive verdict credits five streak
+     minutes. Six consecutive productive verdicts trigger praise and reset the
+     streak counter. This is configured-interval accounting, not measured
+     foreground activity time.
+   - OFF, BREAK, and agent-busy states pause new periodic evaluations. They do
+     not cancel speech that was already queued.
+   - `TTS_ENGINE=openai` uses the Speech API; `TTS_ENGINE=pyttsx3` changes only
+     playback to offline Windows speech. Vision and message generation still
+     require OpenAI. The dashboard discloses that OpenAI speech is
+     AI-generated, as required by the
+     [OpenAI TTS guide](https://developers.openai.com/api/docs/guides/text-to-speech).
+
+5. **ON, OFF, and BREAK modes**
+   - **ON:** effective website blocking, app termination, and productivity
+     monitoring are active.
+   - **OFF:** entering this mode through `/disable` clears the hosts section,
+     and monitor/app enforcement ticks do no work.
+   - **BREAK:** monitoring pauses until the timed break expires. Task-required
+     sites remain open, and the break can add selected site/app exceptions.
+   - A positive social-media break submitted through the provided form reserves
+     its requested minutes immediately against the local-date daily allowance
+     (120 minutes by default). A positive request beyond the remaining
+     allowance is refused. Away breaks do not spend that allowance.
+   - Turning enforcement off requires the exact, case-sensitive phrase:
+     `I will not stop cool deepwork session`.
+
+6. **Task-scoped website access**
+   - The Start form accepts checked site groups and an optional
+     `projects.json` preset. Their ordered, deduplicated union stays open for
+     that focused session.
+   - These sites remain monitored, do not spend social-break minutes, and do
+     not exempt desktop apps.
+   - Task and preset keys are validated server-side. Starting another session
+     resets the one-off choices.
+
+7. **Agentic engineering mode**
+   - An optional watcher uses the same stitched monitor/webcam capture path and
+     a low-detail vision request every `AGENT_CHECK_INTERVAL_S` seconds.
+   - When the latest verdict changes to "agent working," the **website**
+     blocklist becomes empty and productivity monitoring pauses. The app killer
+     continues.
+   - When the watcher later observes an idle, finished, or input-waiting agent,
+     normal website restrictions return while task-required sites remain open,
+     and one transition message is spoken.
+   - Detection occurs on scheduled polls, not instantly, and AI classification
+     can be wrong. Agentic waiting does not spend social-break allowance.
+
+8. **Local realtime dashboard**
+   - The Flask development server binds only to `127.0.0.1` and defaults to
+     port `5000` through `UI_PORT`.
+   - The browser requests the no-cache `/status` JSON endpoint every three
+     seconds, never overlaps polls, pauses polling in a hidden tab, and keeps
+     the last good view during a temporary connection failure.
+   - It displays session state, task access, break and agent state, configured
+     effective enforcement counts, current-session verdict history, and the
+     cadence/result/error state of all scheduler loops.
+
+9. **Local artifacts and logs**
+   - `results/captures/*.jpg`: stitched productivity and agent-watch captures.
+   - `results/llm/*.json`: full successful model response objects and complete
+     textual prompts. Image request payloads refer to the separately stored
+     JPEG paths instead of duplicating base64 data.
+   - `results/sessions/*.jsonl`: timestamped session events.
+   - `results/state.json`: daily social usage and previous topics only.
+   - `logs/deepwork_*.log`: timestamped runtime logs, also streamed to the
+     terminal.
 
 ## Architecture
 
-`main.py` remains the readable wrapper that wires configuration, state,
-storage, enforcement, monitoring, feedback and the local web UI. The rolling
-monitoring path is:
+`main.py` is the orchestration wrapper. It performs elevation, configuration
+and logging, blocker selection, object wiring, cleanup registration, and run
+mode selection. Domain behavior is in `deepwork/`.
 
 ```mermaid
 flowchart TD
-    Main["main.py<br/>config + object wiring"] --> UI["Flask control panel"]
-    Main --> Scheduler["Scheduler threads"]
+    Main["main.py<br/>elevation · config · wiring · cleanup"] --> UI["Flask dashboard"]
     Main --> State["SessionState"]
-    UI -- "task sites + optional preset" --> Access["site_access policy<br/>validate + ordered union"]
-    Access --> State
-    UI -- "GET /status every 3 s" --> Status["Status payload composer"]
-    Status --> State
-    Status --> Runtime["RuntimeStatus<br/>loop cadence + health"]
-    Scheduler --> Runtime
-    State --> Effective["Effective access<br/>full blocklist − allowed task/break sites"]
-    Effective --> Enforcer["Enforcer<br/>hosts + app killing"]
-    Scheduler --> Enforcer
-    Scheduler --> Gate{"Focused monitoring active?"}
-    Gate -- "OFF / BREAK / agent busy" --> Quiet["No capture or periodic voice"]
-    Gate -- "yes, every 5 min" --> Capture["Capture monitors + webcam<br/>stitch and store JPEG"]
-    Capture --> Window["ProductivityAnalyzer<br/>topic + allowed sites + newest 1–5 captures"]
-    Window --> Vision["OpenAI Responses API<br/>multi-image structured verdict"]
+    Main --> Scheduler["Scheduler"]
+    Main --> Store["ResultsStore"]
+
+    UI -- "start · break · agentic · disable" --> State
+    UI -- "apply / clear" --> Hosts["HostsBlocker"]
+    UI -- "GET /status" --> Status["state + RuntimeStatus snapshot"]
+
+    Scheduler --> Enforcer["Enforcer loop"]
+    Enforcer --> AppKiller["psutil app killer"]
+    Enforcer -- "expired break" --> State
+    Enforcer -- "reapply" --> Hosts
+
+    Scheduler --> Monitor["Productivity loop"]
+    Monitor --> Gate{"monitoring_active?"}
+    Gate -- "yes" --> Capture["productivity capture<br/>all monitors + optional webcam"]
+    Gate -- "no" --> Paused["OFF / BREAK / agent busy"]
+    Capture --> Store
+    Capture --> Analyzer["rolling 1..N capture analyzer"]
+    Analyzer --> Vision["OpenAI Responses API<br/>structured verdict"]
     Vision --> State
-    State --> Outcome{"Nudge or 30-min praise?"}
-    Outcome -- "yes" --> Message["Context-rich MessageGenerator"]
-    Outcome -- "ordinary productive tick" --> Reason["Fresh verdict reason"]
-    Message --> Speech["Single SpeechQueue worker"]
-    Reason --> Speech
-    Speech --> TTS["OpenAI TTS or pyttsx3"]
+    State --> Feedback["direct reason or generated nudge/praise"]
+    Feedback --> Speech["single SpeechQueue worker"]
+    Speech --> TTS["OpenAI Speech API or pyttsx3"]
+
+    Scheduler --> AgentWatch["Agent-watch loop"]
+    AgentWatch --> AgentCapture["same stitched capture path"]
+    AgentCapture --> Store
+    AgentCapture --> AgentVision["single-capture activity verdict"]
+    AgentVision --> State
+    State --> Hosts
+
+    Scheduler --> Runtime["RuntimeStatus"]
+    Runtime --> Status
+    State --> Status
 ```
+
+The scheduler uses fixed-delay loops: each loop waits its configured interval,
+runs the blocking tick, then waits again. Capture/API duration therefore adds
+to the wall-clock time between tick starts, and session Start does not reset
+the global loop countdown.
 
 ## Requirements
 
-- Windows 11 (hosts file, winsound, UAC elevation are Windows-specific)
-- [uv](https://docs.astral.sh/uv/) (Python 3.13 is pinned via `.python-version`)
-- An OpenAI API key with access to a vision-capable model and TTS
+- Windows 11. Hosts-file editing, UAC elevation, DirectShow camera capture, and
+  `winsound` playback are Windows-specific.
+- [uv](https://docs.astral.sh/uv/) and internet access. `.python-version`
+  selects Python 3.13; uv creates the project-local `.venv`.
+- An OpenAI API key with access to the configured text/image and speech
+  models.
+- Administrator approval for real hosts-file enforcement.
+- A camera and audio output are optional; missing webcam input is tolerated,
+  while speech failures are logged.
 
-## Setup
+## Install
 
 ```powershell
-git clone <this-repo> deep-work
+git clone https://github.com/BurnyCoder/jarvis-waifu-supervisor.git deep-work
 cd deep-work
-uv sync                      # creates ./.venv and installs everything
-copy .env.example .env       # then edit .env and set OPENAI_API_KEY
+uv sync --locked
+Copy-Item .env.example .env
+# Edit .env and replace the placeholder OPENAI_API_KEY.
 ```
 
-Environment configuration lives in `.env`: see `.env.example` for every variable
-(models, reasoning effort, intervals, rolling progress-window size, TTS
-engine/voice, allowance cap, UI port). Productivity evaluation defaults to
-`VISION_MODEL=gpt-5.6-sol` with `PROGRESS_REASONING_EFFORT=xhigh`;
-`PROGRESS_WINDOW_CAPTURES=5` means each evaluation compares up to the five
-latest captures. The frequent agent-busy poll remains on
-`AGENT_VISION_MODEL=gpt-5.4-mini`. Older `.env` files using `BATCH_SIZE`
-still work.
+`uv sync --locked` reproduces the checked-in lockfile in `./.venv`; use plain
+`uv sync` after intentionally changing dependencies. See the
+[uv project guide](https://docs.astral.sh/uv/guides/projects/) for the
+environment and lockfile behavior.
+
+### Configuration
+
+`.env` contains the runtime tunables:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `OPENAI_API_KEY` | none | Required API credential |
+| `VISION_MODEL` | `gpt-5.6-sol` | Rolling productivity vision model |
+| `PROGRESS_REASONING_EFFORT` | `xhigh` | Productivity-model reasoning effort |
+| `AGENT_VISION_MODEL` | `gpt-5.4-mini` | Frequent agent-activity vision model |
+| `TEXT_MODEL` | `gpt-5.4-mini` | Good-luck/nudge/praise message model |
+| `TTS_ENGINE` | `openai` | `openai` or `pyttsx3` playback |
+| `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
+| `TTS_VOICE` | `coral` | OpenAI speech voice |
+| `CAPTURE_INTERVAL_S` | `300` | Fixed delay before each productivity tick |
+| `PROGRESS_WINDOW_CAPTURES` | `5` | Maximum rolling capture count |
+| `KILL_INTERVAL_S` | `3` | Fixed delay before each enforcement tick |
+| `AGENT_CHECK_INTERVAL_S` | `60` | Fixed delay before each agent-watch tick |
+| `DAILY_SOCIAL_CAP_MIN` | `120` | Daily social-break reservation cap |
+| `UI_PORT` | `5000` | Loopback dashboard port |
+
+`BATCH_SIZE` remains a compatibility fallback for
+`PROGRESS_WINDOW_CAPTURES`. The hosts path, website/app tables, and disable
+phrase are code constants rather than `.env` settings.
+
+The current model IDs are documented by OpenAI:
+[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
+[GPT-5.4 mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini),
+and
+[GPT-4o mini TTS](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts).
+Model access and lifecycle can vary, so change the `.env` values and retest if
+your API project cannot use a default.
 
 ## Run
 
-**Easiest:** double-click **`Start Deep Work.bat`** in Explorer: it asks for
-administrator permission once (UAC), starts the app with live logs in a
-console window, and opens the control panel in your browser. Closing that
-window stops the app and restores the hosts file.
-
-Or from a terminal:
+### Terminal (recommended)
 
 ```powershell
-uv run pytest                      # unit tests: no admin, no API key, no hardware
-uv run python main.py --smoke      # one real capture→vision→speech cycle, then exits
-uv run python main.py --dry-hosts  # full app but hosts changes are only logged (no admin)
-uv run python main.py              # full app: shows ONE UAC prompt, then the web panel
+uv run pytest                      # hardware/network/admin-free unit suite
+uv run python main.py --smoke      # one real capture -> vision -> speech tick
+uv run python main.py --dry-hosts  # full UI; hosts changes are logged only
+uv run python main.py              # real UAC + hosts enforcement + local UI
 ```
 
-Then open **http://127.0.0.1:5000** (or the `UI_PORT` from `.env`), type what
-you'll work on, optionally check only the websites required for that task, and
-press **Start**. You'll hear your good-luck message immediately, then a fresh
-progress-aware voice update after each five-minute monitoring tick.
+`--smoke` uses real screen/webcam capture and the configured OpenAI models. It
+stores and uploads the capture just like a normal productivity tick. It skips
+administrator elevation and uses the dry-run hosts blocker.
 
-### Realtime dashboard
+`--dry-hosts` is dry only for hosts-file writes. After a session starts it can
+still terminate configured apps, capture and upload monitor/webcam images,
+call the configured models, store artifacts, and play speech.
 
-The browser fetches `/status` every three seconds and updates countdowns once
-per second between requests. Polls never overlap, pause while the tab is
-hidden, and resume immediately when you return. If the local server is briefly
-unreachable, the dashboard keeps the last good data visible and shows
-**Reconnecting** instead of blanking the page.
+For a normal run:
 
-Productivity history is scoped to the **current session**:
+1. Accept the UAC prompt.
+2. Read the logged `control panel:` URL and open
+   `http://127.0.0.1:<UI_PORT>`.
+3. Enter a topic, choose only task-required sites, optionally enable agentic
+   mode, and select **Start session**.
+4. Use Ctrl+C for a normal shutdown so the registered cleanup can clear the
+   hosts section. Do not assume that closing or killing the console will run
+   cleanup.
+
+The server is Flask's development server and is intentionally loopback-only.
+Do not expose it to a network without adding production serving, authentication,
+and request protections; Flask explicitly says its
+[development server is not for production](https://flask.palletsprojects.com/server/).
+
+### Double-click launcher
+
+`Start Deep Work.bat` self-elevates, checks that `uv` is on `PATH`, and runs
+`uv run python main.py`. Its browser helper is currently hardcoded to
+`http://127.0.0.1:5599`, while the application and `.env.example` default to
+port `5000`. Set `UI_PORT=5599`, update the URL in the batch file, or open the
+actual logged URL manually.
+
+During the 2026-07-20 audit, `wslrelay` was also observed occupying port
+`5000` on the development workstation; choosing another `UI_PORT` is the
+appropriate remedy when that conflict is present.
+
+## Dashboard and `/status`
+
+Productivity history is scoped to the current in-memory session:
 
 - Every completed evaluation appears newest-first with its timestamp,
-  productive/off-track label, full reason, and expandable full observation.
-- BREAK and OFF preserve the completed timeline so it can still be reviewed.
-- Starting a new session clears the visible timeline and latest verdict.
-- Restarting the program clears the in-memory dashboard history; durable
+  productive/off-track label, complete reason, and expandable observation.
+- BREAK and OFF preserve the last session's timeline for review.
+- Starting another session clears the timeline and latest verdict.
+- Restarting the Python process clears dashboard verdict history; durable
   verdict events remain in `results/sessions/*.jsonl`.
 
-The operations cards report the actual number of blocked domains and watched
-process names plus each scheduler loop's cadence, phase, previous result,
-next-run countdown, and latest error. `/status` is also a documented,
-no-cache JSON endpoint for local inspection:
+Inspect the JSON endpoint directly:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:5000/status
+$port = 5000  # replace with UI_PORT
+Invoke-RestMethod "http://127.0.0.1:$port/status"
 ```
 
-The panel remains bound to `127.0.0.1`; it displays textual AI observations
-but does not serve saved capture images or raw prompts.
+The dashboard renders LLM text with `textContent` and does not expose saved
+capture images or raw prompt files through an HTTP route.
 
-### Task-scoped website access and saved presets
+## Task-required sites and presets
 
-The Start form lists every blocked website group. Checked groups stay open
-until the next focused session starts; an unchecked group remains blocked.
-This is productive-work access, so:
-
-- the five-minute screen/webcam evaluation and spoken feedback stay active;
-- the daily social-break allowance is not reduced;
-- Discord, Telegram, and Steam desktop processes are still killed;
-- a timed break temporarily adds its own site/app allowances; and
-- after agentic waiting ends, task-required sites remain open while the rest
-  re-block.
-
-One-off selections are intentionally not written to `results/state.json`; a
-new session defaults to no task access. The current choices and their effective
-union are visible on the dashboard and at `/status` under `work_access`.
-
-For reusable selections, create `projects.json` in the repo root, e.g.:
+Create an optional `projects.json` beside `main.py`:
 
 ```json
-{"ml-research": ["twitter"], "community": ["discord", "bluesky"]}
+{
+  "ml-research": ["twitter", "linkedin"],
+  "community": ["discord", "bluesky"]
+}
 ```
 
-Selecting a preset adds its groups to the one-off checkboxes, with duplicates
-removed. Valid group names are the keys of `SITE_DOMAINS` in
-`deepwork/config.py` (reddit, youtube, twitter, discord, hackernews,
-linkedin, bluesky, substack, facebook, lesswrong, eaforum, 4chan). Invalid JSON,
-unknown groups, or an invalid preset shape stop startup with a clear log error
-instead of silently weakening enforcement.
+Valid keys are:
 
-## Verifying it works (manual smoke checklist)
+```text
+reddit youtube twitter discord hackernews linkedin
+bluesky substack facebook lesswrong eaforum 4chan
+```
 
-1. `uv run python main.py` → accept the UAC prompt.
-2. Start a session allowing `twitter` and `linkedin`; check
-   `C:\Windows\System32\drivers\etc\hosts` has the
-   `# >>> deepwork block start` section, does not contain `x.com` or
-   `linkedin.com` inside that section, and still maps `reddit.com` to
-   `127.0.0.1`.
-3. Launch Discord or Steam: it dies within ~3 s.
-4. Take a 1-minute social break allowing `reddit`: TTS acknowledges, Reddit
-   unblocks, and a minute later blocking auto-restores (watch the log).
-5. `/disable` with a wrong phrase → refused (403). With the exact phrase →
-   everything off and the hosts section removed.
-6. Run `uv run python main.py --smoke`: one real capture is evaluated and
-   spoken exactly once.
-7. Keep the dashboard open through two evaluations: task access is shown,
-   both evaluations appear newest-first,
-   the reason is readable, and **What the monitor saw** expands to the full
-   observation. Check the live enforcement and scheduler cards as well.
-8. Inspect `logs/`, `results/sessions/`, and `results/llm/`: the session event
-   records selected/effective site keys, the vision prompt names the allowed
-   sites and conditional task-alignment rule, and every full LLM response is
-   present untruncated.
+A preset is unioned with one-off Start-form selections. Invalid JSON, an
+invalid shape, an unknown preset, or an unknown task/preset site key fails
+before the session can weaken enforcement. One-off task access is intentionally
+excluded from `results/state.json`.
 
-## Known limitations & caveats
+Break exceptions use comma-separated group keys in the dashboard. The current
+break route relies on browser-side duration/type constraints and does not
+perform the strict task/preset validation. A forged request can therefore
+submit an invalid duration or kind; unknown break keys have no effect rather
+than producing an error. Use a positive duration, kind `away` or
+`social_media`, the site keys above, and app keys `discord`, `telegram`, and
+`steam`.
 
-- **Browser "Secure DNS" (DoH) bypasses hosts blocking.** Disable it in
-  Chrome/Edge/Firefox settings (or enforce DoH at the Windows level) or
-  blocked sites will still load. Also clear `chrome://net-internals/#dns`
-  after toggling. ([background](https://www.howtogeek.com/784196/how-to-edit-the-hosts-file-on-windows-10-or-11/))
-- **Windows Defender** may flag hosts edits as
-  `SettingsModifier:Win32/HostsFileHijack`: allow the change (it's this app).
-- **Per-author `*.substack.com` subdomains** can't be enumerated in a hosts
-  file; only `substack.com` itself is blocked.
-- **Hard kills skip cleanup.** `atexit` restores the hosts file on normal
-  exit/Ctrl+C, but after a hard kill remove the fenced
-  `# >>> deepwork block` section from
-  `C:\Windows\System32\drivers\etc\hosts` by hand (as admin) and run
-  `ipconfig /flushdns`.
-- **Model names churn.** `VISION_MODEL`/`AGENT_VISION_MODEL`/`TEXT_MODEL`/
-  `TTS_MODEL` are plain `.env` strings: check the
-  [OpenAI model guide](https://developers.openai.com/api/docs/guides/latest-model)
-  and [pricing page](https://developers.openai.com/api/docs/pricing) when
-  models are retired or when tuning quality, latency, and cost.
-- **Cost**: after warm-up, one vision request containing five low-detail
-  images and one TTS request run every five minutes of focused work. This is
-  intentionally more API usage than the old once-per-25-minute batch.
-  GPT-5.6 Sol at `xhigh` prioritizes evaluation quality over latency and cost;
-  lower `PROGRESS_REASONING_EFFORT` after representative testing if desired.
-  [OpenAI documents](https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input)
-  that every image in a multi-image request counts toward billed tokens.
+## Data, privacy, and cost
+
+- Every productivity and agent-watch vision request uploads the stitched
+  monitor image and optional webcam frame to OpenAI as image input. Topics,
+  allowed-site context, observations, and feedback prompts are also sent.
+- `TTS_ENGINE=pyttsx3` keeps audio synthesis local but does **not** make the
+  rest of the application offline.
+- Captures, logs, exchange JSON, and state are ordinary unencrypted local
+  files. They may contain sensitive screen, webcam, topic, and model-output
+  data. Protect the Windows account and delete old artifacts deliberately.
+- `.env`, `logs/`, and `results/` are gitignored. Never force-add them.
+- The app does not calculate spend. A normal successful productivity tick uses
+  one multi-image vision request and one speech request; nudges and praise add
+  a text-generation request. Agentic mode adds polling vision requests and
+  transition message/speech requests.
+- OpenAI meters each image as input tokens, and tokenization depends on model,
+  dimensions, and detail. Use the current
+  [vision guide](https://developers.openai.com/api/docs/guides/images-vision)
+  and [pricing page](https://developers.openai.com/api/docs/pricing) instead
+  of relying on a fixed per-day estimate.
+
+## Verification
+
+### Automated
+
+```powershell
+uv run pytest
+uv run python main.py --help
+```
+
+The unit suite uses fakes and temporary paths; it does not require
+administrator access, an API call, capture hardware, or audio playback.
+
+### Manual end-to-end checklist
+
+1. Start `uv run python main.py`, accept UAC, and open the logged dashboard URL.
+2. Start a session allowing `twitter` and `linkedin`.
+3. Inspect `C:\Windows\System32\drivers\etc\hosts`: the fenced section should
+   omit the selected groups, include an unselected domain such as `reddit.com`,
+   and contain both IPv4 and IPv6 loopback entries.
+4. Confirm an unselected hostname resolves to `127.0.0.1` or `::1`, then test
+   the actual browser because browser-level resolution and caches can differ.
+5. Launch Discord or Steam; an exact configured process should be terminated
+   on an enforcement tick.
+6. Start a one-minute social break allowing `reddit`; confirm the reservation
+   is deducted immediately, monitoring pauses, and blocking returns after
+   expiry.
+7. Submit a wrong disable phrase and confirm HTTP 403/state remains ON; submit
+   the exact phrase and confirm the fenced hosts section is removed.
+8. Run `uv run python main.py --smoke` and inspect the newest files under
+   `logs/`, `results/captures/`, `results/llm/`, and `results/sessions/`.
+9. Verify that the stored prompt describes the selected task sites
+   conditionally, the model output matches the prompt contract, and the spoken
+   line matches the recorded verdict.
+
+## Known limitations
+
+- **Explicit hosts only:** hosts files do not support wildcard domain policy.
+  Unlisted subdomains, alternate domains, direct IP access, proxies, VPNs, or
+  application-specific resolvers can bypass or partially defeat blocking.
+  For Substack, this project covers `substack.com` and `www.substack.com`, not
+  arbitrary author subdomains.
+- **DoH behavior varies by resolver:** Microsoft's
+  [Windows resolver documentation](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues)
+  says the DNS client checks its cache and hosts file before querying DNS, but
+  software that uses its own resolver can bypass the Windows path. Mozilla
+  documents that
+  [Firefox DoH can bypass local DNS filtering](https://support.mozilla.org/en-US/kb/firefox-dns-over-https).
+  If a blocked site still resolves, inspect that browser's secure-DNS mode and
+  cache rather than assuming every browser behaves alike.
+- **Process names are finite:** renamed executables, web versions, helper
+  processes not listed in `APP_PROCESSES`, and protected processes are outside
+  the current app-killer policy.
+- **Low-detail vision is fallible:** the analyzer intentionally sends
+  `detail="low"`, which OpenAI describes as a low-resolution mode. Small text,
+  wide stitched images, occlusion, and ambiguous activity can produce an
+  incorrect verdict.
+- **Fixed-delay timing:** API and capture latency extend the real interval.
+  Agent completion can remain undetected until a later watcher tick.
+- **Break validation is incomplete:** HTML constrains normal form input, but
+  `/break` does not validate the duration range, kind, or exception keys
+  server-side. In particular, a forged negative social duration can corrupt
+  allowance accounting. Keep the panel loopback-only and treat server-side
+  validation as required follow-up work.
+- **Cleanup is best-effort:** Python
+  [`atexit`](https://docs.python.org/3.13/library/atexit.html) handlers do not
+  run after every kind of hard termination. If cleanup was skipped, remove the
+  fenced section as Administrator and run `ipconfig /flushdns`.
+- **Defender may object:** Microsoft documents
+  [`SettingsModifier:Win32/HostsFileHijack`](https://www.microsoft.com/en-us/wdsi/threats/malware-encyclopedia-description?Name=SettingsModifier%3AWin32%2FHostsFileHijack)
+  for suspicious hosts-file changes. Confirm that a detection corresponds to
+  this intentional edit before taking any exclusion action.
+- **Launcher port mismatch:** the batch helper opens `5599`; the application
+  default is `5000`.
 
 ## Development
 
-See `AGENTS.md` for architecture, module map, conventions (TDD, dependency
-injection, source-linked comments) and gotchas. Tests: `uv run pytest`.
+Read `AGENTS.md` for repository workflow, invariants, module ownership,
+verification expectations, and current gotchas. `CLAUDE.md` imports that file
+so Claude Code receives the same maintained instructions without a second copy.
