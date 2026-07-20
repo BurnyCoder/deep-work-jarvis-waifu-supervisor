@@ -1,8 +1,9 @@
-# Background scheduler — the app's heartbeat. Two daemon threads:
+# Background scheduler — the app's heartbeat. Independent daemon loops:
 #  * enforcer (every KILL_INTERVAL_S): kills distraction apps and acts as the
 #    break watchdog that auto-restores blocking when a break expires.
 #  * monitor (every CAPTURE_INTERVAL_S): capture → stitch → save → rolling
 #    progress analysis → exactly one feedback utterance.
+#  * agent-watch (optional): checks whether an AI coding agent is still active.
 # Plain threads (not asyncio) because every underlying call is blocking C or
 # subprocess work; loops wait on threading.Event so stop() is instant:
 # https://docs.python.org/3/library/threading.html#threading.Event.wait
@@ -45,6 +46,11 @@ class Scheduler:
         self.capture_interval_s = capture_interval_s
         self.kill_interval_s = kill_interval_s
         self.capture_fn = capture_fn or capture_stitched
+        # Both vision loops reach the same physical camera. OpenCV documents
+        # VideoCapture as non-thread-safe, so one primitive lock serializes the
+        # complete injected capture call without delaying model or storage work:
+        # https://docs.opencv.org/master/d0/db6/tutorial_orbbec_astra_openni.html
+        self._capture_lock = threading.Lock()
         self.kill_fn = kill_fn or app_killer.kill_targets
         # Agentic mode watcher (None = feature off): polls whether the user's
         # AI coding agent is still busy and flips blocking on transitions.
@@ -76,6 +82,19 @@ class Scheduler:
             },
             now_fn=self.now_fn,
         )
+
+    def _capture_image(self, source: str):
+        """Run one source-labelled capture while excluding the other vision loop."""
+        # Logging before acquisition exposes contention: a request without a
+        # matching start is waiting for the active screen/webcam capture.
+        log.info("%s capture requested", source)
+        # Lock context managers release automatically when capture raises:
+        # https://docs.python.org/3/library/threading.html#using-locks-conditions-and-semaphores-in-the-with-statement
+        with self._capture_lock:
+            log.info("%s capture started", source)
+            image = self.capture_fn()
+            log.info("%s capture completed", source)
+            return image
 
     # ---------- tick bodies (called by loops AND directly by tests) ----------
 
@@ -109,7 +128,7 @@ class Scheduler:
             self.analyzer.reset()                  # new session → fresh history
             self._analysis_session_start = self.state.session_start
         try:
-            image = self.capture_fn()              # all monitors + webcam
+            image = self._capture_image("monitor")
         except Exception as exc:                   # capture must never kill the loop
             log.exception("capture failed")
             return {
@@ -160,7 +179,7 @@ class Scheduler:
                 or not self.state.agentic_mode:
             return {"status": "inactive"}
         try:
-            image = self.capture_fn()             # reuse the normal capture path
+            image = self._capture_image("agent-watch")
         except Exception as exc:
             log.exception("agent-watch capture failed")
             return {
