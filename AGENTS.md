@@ -62,7 +62,7 @@ Implementation details live under `deepwork/`:
 | `monitoring/webcam_capture.py` | Optional DirectShow webcam frame; failure returns `None` |
 | `monitoring/stitcher.py` | Labeled vertical monitor/webcam composite |
 | `monitoring/analyzer.py` | Rolling 1..N structured productivity verdict and single-capture agent-activity verdict |
-| `feedback/messages.py` | Context-grounded good-luck, nudge, praise, break, and agent-transition text |
+| `feedback/messages.py` | Context-grounded good-luck, nudge, milestone-praise, break, and agent-transition text |
 | `feedback/tts.py` | OpenAI WAV or pyttsx3 speaker behind one FIFO worker |
 | `webui/app.py` | Flask factory and state-changing routes |
 | `webui/status.py` | Composition of state and scheduler snapshots |
@@ -79,6 +79,14 @@ Implementation details live under `deepwork/`:
   available rolling window. With five captures at a five-minute sampling
   interval, oldest-to-newest visual span is 20 minutes; the first full window
   completes around the fifth tick.
+- The analyzer prompt requires every productive reason to integrate a brief
+  affirmation tied to concrete task-aligned evidence and asks the model to vary
+  the wording naturally. A single capture may praise current engagement but
+  must not claim change over time; later progress praise requires supporting
+  capture evidence. The canonical reason is stored, displayed, and spoken
+  unchanged on ordinary productive ticks. Off-track and 30-minute
+  streak-milestone ticks instead generate a nudge or richer praise, while every
+  evaluation still queues exactly one utterance.
 - Scheduler intervals are fixed delays after a tick finishes, not wall-clock
   schedules. Starting a session does not reset their countdowns.
 - Productivity and agent-watch ticks share one capture lock. Hold it only
