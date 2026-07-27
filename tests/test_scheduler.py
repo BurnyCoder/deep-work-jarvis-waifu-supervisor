@@ -156,21 +156,30 @@ def test_monitor_forwards_task_allowed_sites_to_vision_and_message_context(
     assert "linkedin" in state.context_summary(now=T0)
 
 
-def test_productive_verdict_reason_is_spoken_each_tick(tmp_path):
-    verdict = ProductivityVerdict(productive=True, reason="You advanced the test suite.",
-                                  observed="IDE shows three newly passing tests")
+def test_productive_encouragement_is_spoken_once_without_second_llm_call(tmp_path):
+    reason = "Nice work—you advanced the test suite with three newly passing tests."
+    verdict = ProductivityVerdict(
+        productive=True,
+        reason=reason,
+        observed="IDE shows three newly passing tests",
+    )
     sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
     state.start_session("thesis", now=T0)
     sched._monitor_tick()
-    # Ordinary productive ticks use the already-generated, fresh vision reason
-    # directly, avoiding a second text-model call.
-    assert sched.speech.spoken == ["You advanced the test suite."]
+    # The analyzer-authored encouragement is the one canonical utterance for
+    # this verdict, avoiding a duplicate message-model call or double praise.
+    assert sched.speech.spoken == [reason]
     assert sched.messages.calls == []
+    assert state.last_verdict["reason"] == reason
 
 
 def test_praise_after_thirty_productive_minutes(tmp_path):
-    verdict = ProductivityVerdict(productive=True, reason="deep in code",
-                                  observed="IDE focused, tests green")
+    reason = "Great focus—you are deep in code with the tests green."
+    verdict = ProductivityVerdict(
+        productive=True,
+        reason=reason,
+        observed="IDE focused, tests green",
+    )
     sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
     state.start_session("thesis", now=T0)
     # Rolling windows overlap, so each verdict advances the streak by only the
@@ -178,9 +187,10 @@ def test_praise_after_thirty_productive_minutes(tmp_path):
     sched.verdict_minutes = 5
     for _ in range(5):
         sched._monitor_tick()
-    assert sched.speech.spoken == ["deep in code"] * 5
+    assert sched.speech.spoken == [reason] * 5
     sched._monitor_tick()
-    assert sched.speech.spoken == ["deep in code"] * 5 + ["<praise>"]
+    assert sched.speech.spoken == [reason] * 5 + ["<praise>"]
+    assert [kind for kind, _ in sched.messages.calls] == ["praise"]
 
 
 def test_progress_window_resets_only_for_a_new_session(tmp_path):

@@ -58,9 +58,13 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      Starting or manually stopping a break queues a context-grounded
      acknowledgment.
    - Each successful productivity evaluation queues exactly one utterance.
-     An ordinary productive verdict speaks the vision model's reason directly.
-     An off-track verdict or praise milestone first uses the text model to
-     generate a context-grounded nudge or congratulations.
+     An ordinary productive verdict speaks the vision model's reason directly;
+     that reason is prompted to integrate a brief, naturally varied affirmation
+     tied to the observed work before naming its concrete evidence. A
+     single-capture reason may praise current engagement but cannot claim
+     progress over time; later progress praise requires supporting capture
+     evidence. An off-track verdict or 30-minute streak milestone first uses
+     the text model to generate a context-grounded nudge or richer praise.
    - At the default cadence, each productive verdict credits five streak
      minutes. Six consecutive productive verdicts trigger praise and reset the
      streak counter. This is configured-interval accounting, not measured
@@ -163,7 +167,7 @@ flowchart TD
     Capture -- "monitor caller" --> Analyzer["rolling 1..N capture analyzer"]
     Analyzer --> Vision["OpenAI Responses API<br/>structured verdict"]
     Vision --> State
-    State --> Feedback["direct reason or generated nudge/praise"]
+    State --> Feedback["affirming direct reason<br/>or generated nudge/milestone praise"]
     Feedback --> Speech["single SpeechQueue worker"]
     Speech --> TTS["OpenAI Speech API or pyttsx3"]
 
@@ -227,7 +231,7 @@ environment and lockfile behavior.
 | `PROGRESS_REASONING_EFFORT` | `xhigh` | Productivity-model reasoning effort |
 | `AGENT_VISION_MODEL` | `gpt-5.6-sol` | Frequent agent-activity vision model |
 | `AGENT_REASONING_EFFORT` | `xhigh` | Agent-activity reasoning effort |
-| `TEXT_MODEL` | `gpt-5.6-sol` | Good-luck/nudge/praise message model |
+| `TEXT_MODEL` | `gpt-5.6-sol` | Good-luck/nudge/milestone-praise message model |
 | `TEXT_REASONING_EFFORT` | `xhigh` | Feedback-message reasoning effort |
 | `TTS_ENGINE` | `openai` | `openai` or `pyttsx3` playback |
 | `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
@@ -369,9 +373,9 @@ session JSONL event.
   data. Protect the Windows account and delete old artifacts deliberately.
 - `.env`, `logs/`, and `results/` are gitignored. Never force-add them.
 - The app does not calculate spend. A normal successful productivity tick uses
-  one multi-image vision request and one speech request; nudges and praise add
-  a text-generation request. Agentic mode adds polling vision requests and
-  transition message/speech requests.
+  one multi-image vision request and one speech request; off-track nudges and
+  30-minute streak-milestone praise add a text-generation request. Agentic mode
+  adds polling vision requests and transition message/speech requests.
 - OpenAI meters each image as input tokens, and tokenization depends on model,
   dimensions, and detail. Use the current
   [vision guide](https://developers.openai.com/api/docs/guides/images-vision)
@@ -412,8 +416,9 @@ administrator access, an API call, capture hardware, or audio playback.
 8. Run `uv run python main.py --smoke` and inspect the newest files under
    `logs/`, `results/captures/`, `results/llm/`, and `results/sessions/`.
 9. Verify that the stored prompt describes the selected task sites
-   conditionally, the model output matches the prompt contract, and the spoken
-   line matches the recorded verdict.
+   conditionally. For a productive result, confirm its reason includes a
+   natural affirmation grounded in concrete evidence, does not invent change
+   over time from the single capture, and matches the recorded and spoken line.
 
 ## Known limitations
 
