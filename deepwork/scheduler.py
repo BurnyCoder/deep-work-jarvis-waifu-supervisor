@@ -13,8 +13,14 @@ import threading
 from datetime import datetime
 
 from deepwork.blocking import app_killer
+from deepwork.feedback.goal_access import (
+    InlineGoalAccessFeedback,
+    queue_goal_access_feedback,
+    queue_transition_feedback,
+)
 from deepwork.monitoring import screen_capture, stitcher, webcam_capture
 from deepwork.runtime_status import RuntimeStatus
+from deepwork.state import goal_access_event
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +41,7 @@ class Scheduler:
                  capture_interval_s: int, kill_interval_s: int,
                  capture_fn=None, kill_fn=None,
                  agent_checker=None, agent_check_interval_s: int = 60,
-                 now_fn=None):
+                 now_fn=None, goal_access_feedback=None):
         # Collaborators injected — real objects in main.py, fakes in tests.
         self.state = state
         self.blocker = blocker
@@ -43,6 +49,12 @@ class Scheduler:
         self.analyzer = analyzer
         self.messages = messages
         self.speech = speech
+        # Production injects the daemon-backed adapter; the inline default
+        # keeps isolated unit tests deterministic while sharing the same API.
+        self.goal_access_feedback = (
+            goal_access_feedback
+            or InlineGoalAccessFeedback(state, messages, speech)
+        )
         self.capture_interval_s = capture_interval_s
         self.kill_interval_s = kill_interval_s
         self.capture_fn = capture_fn or capture_stitched
@@ -62,9 +74,9 @@ class Scheduler:
         # Rolling windows overlap; each new verdict certifies only the newest
         # interval, never the whole historical context.
         self.verdict_minutes = max(1, capture_interval_s // 60)
-        # A changed session_start is the dependency-injected session identity
-        # used to prevent captures leaking from one session into the next.
-        self._analysis_session_start = None
+        # The frozen state snapshot includes both session and temporary-grant
+        # identity, preventing captures from leaking across either boundary.
+        self._analysis_context = None
         # Event.set() wakes every wait() immediately → instant shutdown.
         self.stop_event = threading.Event()
         self.threads: list[threading.Thread] = []
@@ -96,6 +108,32 @@ class Scheduler:
             log.info("%s capture completed", source)
             return image
 
+    def _append_session_event(self, event: dict, action: str) -> None:
+        """Keep policy progress independent of a retryable JSONL failure."""
+
+        try:
+            self.store.append_session_event(event)
+        except Exception:
+            log.exception("%s session-event persistence pending retry", action)
+
+    def _retry_session_events(self, action: str) -> None:
+        """Retry retained ResultsStore lines without failing the scheduler tick."""
+
+        retry_events = getattr(self.store, "retry_session_events", None)
+        if retry_events is None:
+            return
+        try:
+            retry_events()
+        except Exception:
+            log.exception("%s session-event retry failed", action)
+
+    def _release_transition_feedback(self, action: str) -> None:
+        """Publish speech only after earlier JSONL events are durable."""
+
+        self._retry_session_events(action)
+        if not getattr(self.store, "session_events_pending", False):
+            self.state.release_goal_access_feedback()
+
     # ---------- tick bodies (called by loops AND directly by tests) ----------
 
     def _enforcer_tick(self, now: datetime | None = None) -> dict:
@@ -108,25 +146,91 @@ class Scheduler:
             if active
             else []
         )
-        # Break watchdog: on expiry restore ON + full blocklist (requirement 5
-        # "timed break with auto-restore").
-        break_ended = self.state.end_break_if_due(now=now)
+        # Expiry state, its canonical event, reconciliation, and queued speech
+        # form one ordered grant lifecycle relative to threaded Flask requests.
+        with self.state.goal_access_lifecycle():
+            # Sample after lock acquisition so a blocked enforcer never checks
+            # expiry against an instant from before a slow earlier transition.
+            current = now if now is not None else self.now_fn()
+            result = self._finish_enforcer_tick(current, killed)
+        # wake() is non-blocking in production. Even an injected slow inline
+        # adapter cannot hold the lifecycle lock or delay hosts restoration.
+        self.goal_access_feedback.wake()
+        return result
+
+    def _finish_enforcer_tick(self, current: datetime, killed: list) -> dict:
+        """Expire/reconcile policies while the goal lifecycle lock is held."""
+
+        from deepwork.state import Mode
+
+        # Both watchdog transitions only mark state dirty. Reconciliation owns
+        # the single final hosts write and also retries a prior failed write.
+        self._retry_session_events("enforcer")
+        break_ended = self.state.end_break_if_due(now=current)
+        goal_access_ended = self.state.end_goal_access_if_due(now=current)
         if break_ended:
-            self.blocker.apply(self.state.effective_blocklist())
-            self.store.append_session_event({"event": "break_ended"})
-            log.info("break expired - enforcement restored")
+            self._append_session_event(
+                {"event": "break_ended"},
+                "break-expiry",
+            )
+            log.info("break expired - enforcement restoration requested")
+        if goal_access_ended:
+            self.state.cancel_pending_goal_access_start(goal_access_ended)
+            event = goal_access_event(
+                "goal_access_ended",
+                goal_access_ended,
+                ended_at=current,
+                reason="expired",
+            )
+            # Enqueue for ordered persistence before any later route can start
+            # a replacement grant. Transient disk/hosts failures then delay
+            # only event durability/feedback, never expiry reblocking.
+            self._append_session_event(event, "goal-access-expiry")
+            log.info(
+                "goal access expired - goal=%r allowed_sites=%s",
+                goal_access_ended.goal,
+                list(goal_access_ended.allowed_sites),
+            )
+            queue_goal_access_feedback(
+                self.state,
+                "goal_access_end",
+                goal_access_ended,
+                now=current,
+                reason="expired",
+            )
+        try:
+            # This is a no-op while clean; exceptions leave the dirty flag set
+            # so this same periodic path retries without unconditional writes.
+            self.state.reconcile_enforcement(self.blocker)
+        except Exception as exc:
+            log.exception("enforcement reconciliation failed")
+            return {
+                "status": "enforcement_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "killed_processes": killed,
+                "break_ended": break_ended,
+                "goal_access_ended": goal_access_ended is not None,
+            }
+
+        self.state.mark_goal_access_feedback_policy_applied()
+        self._release_transition_feedback("enforcer")
+        active = self.state.mode is not Mode.OFF
         return {
             "status": "active" if active else "off",
             "killed_processes": killed,
             "break_ended": break_ended,
+            "goal_access_ended": goal_access_ended is not None,
         }
 
     def _monitor_tick(self) -> dict:
         if not self.state.monitoring_active:       # only ON mode is watched
             return {"status": "paused"}
-        if self._analysis_session_start != self.state.session_start:
-            self.analyzer.reset()                  # new session → fresh history
-            self._analysis_session_start = self.state.session_start
+        context = self.state.monitoring_context()
+        if self._analysis_context != context:
+            # A session, permanent-site, grant-start or grant-end transition
+            # invalidates earlier visuals before the next capture is judged.
+            self.analyzer.reset()
+            self._analysis_context = context
         try:
             image = self._capture_image("monitor")
         except Exception as exc:                   # capture must never kill the loop
@@ -135,20 +239,41 @@ class Scheduler:
                 "status": "capture_failed",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+        # A session, break, grant, or agent transition during capture makes the
+        # pixels stale before any persistence or model work occurs.
+        if (
+            not self.state.monitoring_active
+            or self.state.monitoring_context() != context
+        ):
+            return {"status": "context_changed"}
         path = self.store.save_capture(image)
         verdict = self.analyzer.add_capture(
             path,
-            topic=self.state.topic,
-            allowed_sites=self.state.work_allowed_sites,
+            topic=context.topic,
+            allowed_sites=context.permanent_sites,
+            goal_access_goal=context.goal_access_goal,
+            goal_access_sites=context.goal_access_sites,
         )
         if verdict is None:                        # defensive fake/legacy support
+            if (
+                not self.state.monitoring_active
+                or self.state.monitoring_context() != context
+            ):
+                return {"status": "context_changed"}
             return {"status": "no_verdict"}
-        # Fold the verdict into the streak; outcome may demand speech.
-        outcome = self.state.record_verdict(verdict.productive,
-                                            minutes=self.verdict_minutes,
-                                            observed=verdict.observed,
-                                            reason=verdict.reason,
-                                            now=self.now_fn())
+        # Context comparison and publication share the state lock. A transition
+        # during model work therefore produces no verdict event or speech.
+        verdict_at = self.now_fn()
+        accepted, outcome = self.state.record_verdict_if_context(
+            context,
+            verdict.productive,
+            minutes=self.verdict_minutes,
+            observed=verdict.observed,
+            reason=verdict.reason,
+            now=verdict_at,
+        )
+        if not accepted:
+            return {"status": "context_changed"}
         self.store.append_session_event({"event": "verdict",
                                          "productive": verdict.productive,
                                          "reason": verdict.reason,
@@ -156,7 +281,7 @@ class Scheduler:
         if outcome:                                # milestone nudge or praise
             # The message model gets what was SEEN plus the whole session
             # snapshot, so the spoken line can quote concrete specifics.
-            text = self.messages.generate(outcome, topic=self.state.topic,
+            text = self.messages.generate(outcome, topic=context.topic,
                                           reason=verdict.reason,
                                           observed=verdict.observed,
                                           session_context=self.state.context_summary())
@@ -167,7 +292,7 @@ class Scheduler:
         self.speech.say(text)                      # exactly one line per verdict
         return {
             "status": "productive" if verdict.productive else "unproductive",
-            "verdict_ts": self.state.last_verdict["ts"],
+            "verdict_ts": verdict_at.isoformat(),
         }
 
     def _agent_watch_tick(self) -> dict:
@@ -188,20 +313,48 @@ class Scheduler:
             }
         path = self.store.save_capture(image)
         verdict = self.agent_checker.check(path)
-        # set_agent_busy returns True only on busy<->idle TRANSITIONS, so
-        # hosts rewrites and speech never repeat on steady-state polls.
-        if not self.state.set_agent_busy(verdict.agent_working):
+        with self.state.goal_access_lifecycle():
+            result = self._finish_agent_watch_tick(verdict)
+        self.goal_access_feedback.wake()
+        return result
+
+    def _finish_agent_watch_tick(self, verdict) -> dict:
+        """Apply one watcher verdict inside the shared policy lifecycle."""
+
+        # A failed transition write remains dirty; even a later steady verdict
+        # reaches reconciliation and retries the exact latest state policy.
+        changed = self.state.set_agent_busy(verdict.agent_working)
+        if changed:
+            self._append_session_event(
+                {
+                    "event": "agent_watch",
+                    "agent_working": verdict.agent_working,
+                    "reason": verdict.reason,
+                },
+                "agent-watch",
+            )
+            queue_transition_feedback(
+                self.state,
+                "agent_running" if verdict.agent_working else "agent_done",
+                reason=verdict.reason,
+                session_context=self.state.context_summary(),
+            )
+        try:
+            self.state.reconcile_enforcement(self.blocker)
+        except Exception as exc:
+            log.exception("agent-watch enforcement reconciliation failed")
+            return {
+                "status": "enforcement_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "changed": changed,
+            }
+        self.state.mark_goal_access_feedback_policy_applied()
+        self._release_transition_feedback("agent-watch")
+        if not changed:
             return {
                 "status": "working" if verdict.agent_working else "idle",
                 "changed": False,
             }
-        self.blocker.apply(self.state.effective_blocklist())
-        self.store.append_session_event({"event": "agent_watch",
-                                         "agent_working": verdict.agent_working,
-                                         "reason": verdict.reason})
-        kind = "agent_running" if verdict.agent_working else "agent_done"
-        self.speech.say(self.messages.generate(kind, reason=verdict.reason,
-                                               session_context=self.state.context_summary()))
         return {
             "status": "working" if verdict.agent_working else "idle",
             "changed": True,

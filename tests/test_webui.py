@@ -2,13 +2,17 @@
 # https://flask.palletsprojects.com/en/stable/testing/
 
 import json
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from deepwork.config import CONFIRMATION_PHRASE, SITE_DOMAINS
-from deepwork.state import Mode, SessionState
+from deepwork.feedback.goal_access import GoalAccessFeedbackQueue
+from deepwork.scheduler import Scheduler
+from deepwork.state import GoalAccessInfo, Mode, SessionState
 from deepwork.storage import ResultsStore
 from deepwork.webui.app import create_app
 
@@ -22,8 +26,41 @@ class FakeBlocker:
         self.cleared += 1
 
 
+class FailOnApplyBlocker(FakeBlocker):
+    """Fail one selected hosts apply so routes can expose retry semantics."""
+
+    def __init__(self, fail_on_call):
+        super().__init__()
+        self.apply_calls = 0
+        self.fail_on_call = fail_on_call
+
+    def apply(self, domains):
+        self.apply_calls += 1
+        if self.apply_calls == self.fail_on_call:
+            raise RuntimeError("hosts write unavailable")
+        super().apply(domains)
+
+
+class RetryableEventStore(ResultsStore):
+    """Raise before selected JSONL flushes while retaining complete lines."""
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.failures_remaining = 0
+
+    def _flush_session_events_locked(self):
+        if self._pending_session_lines and self.failures_remaining:
+            self.failures_remaining -= 1
+            raise OSError("session disk temporarily unavailable")
+        return super()._flush_session_events_locked()
+
+
 class FakeMessages:
+    def __init__(self):
+        self.calls = []
+
     def generate(self, kind, **ctx):
+        self.calls.append((kind, ctx))
         return f"<{kind}>"
 
 
@@ -41,11 +78,47 @@ class FailingBreakEndMessages(FakeMessages):
         return super().generate(kind, **ctx)
 
 
-def make_ui(tmp_path, *, now_fn=None, messages=None):
+class FailingGoalAccessMessages(FakeMessages):
+    """Simulate unavailable optional copy generation for grant transitions."""
+
+    def generate(self, kind, **ctx):
+        if kind in {"goal_access_start", "goal_access_end"}:
+            raise RuntimeError("text service unavailable")
+        return super().generate(kind, **ctx)
+
+
+class BlockingGoalAccessMessages(FakeMessages):
+    """Pause start copy generation so expiry can race optional feedback."""
+
+    def __init__(self):
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(self, kind, **ctx):
+        self.calls.append((kind, ctx))
+        if kind == "goal_access_start":
+            self.started.set()
+            assert self.release.wait(timeout=3)
+        return f"<{kind}>"
+
+
+def session_events(client):
+    """Read every persisted event in append order for route assertions."""
+
+    root = Path(client.application.config["TEST_RESULTS_ROOT"])
+    event_file = next((root / "sessions").glob("*.jsonl"))
+    return [
+        json.loads(line)
+        for line in event_file.read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def make_ui(tmp_path, *, now_fn=None, messages=None, blocker=None, store=None):
     """Build the same dependency-injected Flask UI for fixtures and clock tests."""
 
     state = SessionState(project_allowlists={"ml-research": ["twitter"]})
-    blocker, speech = FakeBlocker(), FakeSpeech()
+    blocker, speech = blocker or FakeBlocker(), FakeSpeech()
     runtime_snapshot = lambda now=None: {
         "running": True,
         "loops": {
@@ -62,7 +135,8 @@ def make_ui(tmp_path, *, now_fn=None, messages=None):
             },
         },
     }
-    app = create_app(state=state, blocker=blocker, store=ResultsStore(tmp_path),
+    app = create_app(state=state, blocker=blocker,
+                     store=store or ResultsStore(tmp_path),
                      messages=messages or FakeMessages(), speech=speech,
                      runtime_snapshot=runtime_snapshot, now_fn=now_fn)
     app.testing = True
@@ -102,11 +176,21 @@ def test_index_uses_status_first_semantic_dashboard(ui):
     assert 'id="stop-break-form"' in html
     assert 'action="/break/stop"' in html
     assert "Stop break and resume work" in html
+    assert 'id="goal-access-form"' in html
+    assert 'action="/goal-access"' in html
+    assert 'id="goal-access-active"' in html
+    assert 'action="/goal-access/stop"' in html
+    assert "Goal complete — stop access" in html
     break_card = html[
         html.index('aria-labelledby="break-heading"'):
         html.index('aria-labelledby="disable-heading"')
     ]
     assert 'id="stop-break-form"' in break_card
+    goal_card = html[
+        html.index('aria-labelledby="goal-access-heading"'):
+        html.index('aria-labelledby="agentic-heading"')
+    ]
+    assert all(f'value="{site}"' in goal_card for site in SITE_DOMAINS)
     assert "<fieldset" in html and "Websites needed for this task" in html
     assert all(f'value="{site}"' in html for site in SITE_DOMAINS)
     assert "X / Twitter" in html and "Hacker News" in html
@@ -125,8 +209,13 @@ def test_dashboard_assets_implement_safe_non_overlapping_live_updates(ui):
     assert 'createElement("details")' in script   # expandable evidence
     assert "allowed_sites" in script              # break allowances stay visible
     assert "work_access" in script                # task allowances stay visible
+    assert "goal_access" in script                # temporary access stays visible
     assert "Last session task access" in script   # OFF state is not misleading
     assert "stop-break-form" in script             # stop control follows live state
+    assert "goal-access-form" in script             # form/panel follow live grant
+    assert "reconciliation_pending" in script       # failed hosts writes stay visible
+    assert "Policy update pending" in script
+    assert "other permissions may still keep a site open" in script
     assert ".textContent" in script               # safe LLM text rendering
     assert ".innerHTML" not in script              # no HTML injection sink
 
@@ -202,6 +291,1137 @@ def test_start_event_records_task_access(ui):
     assert event["allowed_sites"] == ["twitter", "linkedin"]
     assert event["project"] == "ml-research"
     assert event["agentic"] is True
+
+
+def test_timed_goal_access_applies_free_access_speaks_and_records(tmp_path):
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    messages = FakeMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+        messages=messages,
+    )
+    client.post("/start", data={"topic": "write launch report"})
+    allowance_before = state.social_minutes_remaining(now=clock["now"])
+
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch launch reactions for the report",
+            "allowed_sites": ["linkedin", "twitter"],
+            "duration_mode": "timed",
+            "minutes": "15",
+        },
+    )
+
+    assert response.status_code == 302
+    assert state.goal_access.goal == "Fetch launch reactions for the report"
+    assert state.goal_access.allowed_sites == ("twitter", "linkedin")
+    assert state.goal_access.start_time == clock["now"]
+    assert state.goal_access.end_time == clock["now"] + timedelta(minutes=15)
+    assert state.social_minutes_remaining(now=clock["now"]) == allowance_before
+    assert "x.com" not in blocker.applied[-1]
+    assert "linkedin.com" not in blocker.applied[-1]
+    assert "reddit.com" in blocker.applied[-1]
+    assert speech.spoken[-1] == "<goal_access_start>"
+    message_kind, message_context = messages.calls[-1]
+    assert message_kind == "goal_access_start"
+    assert message_context["goal"] == "Fetch launch reactions for the report"
+    assert message_context["site_labels"] == ["X / Twitter", "LinkedIn"]
+    assert message_context["duration_description"] == "15 minutes"
+    assert "session_context" in message_context
+    event = session_events(client)[-1]
+    assert event == {
+        "ts": event["ts"],
+        "event": "goal_access_started",
+        "goal": "Fetch launch reactions for the report",
+        "allowed_sites": ["twitter", "linkedin"],
+        "allowed_site_labels": ["X / Twitter", "LinkedIn"],
+        "started_at": "2026-07-20T09:00:00",
+        "expires_at": "2026-07-20T09:15:00",
+        "requested_minutes": 15,
+        "until_session_end": False,
+    }
+
+
+def test_goal_access_start_uses_the_exact_atomic_return_record(
+    tmp_path,
+    monkeypatch,
+):
+    """A replacement cannot misrecord or announce the superseded grant."""
+
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    messages = FakeMessages()
+    client, state, blocker, _ = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+        messages=messages,
+    )
+    client.post("/start", data={"topic": "research"})
+    atomic_start = state.start_goal_access
+
+    def start_then_replace(goal, allowed_sites, minutes, now=None):
+        started, reason = atomic_start(goal, allowed_sites, minutes, now=now)
+        assert isinstance(started, GoalAccessInfo) and reason == ""
+        state.stop_goal_access(now=now + timedelta(seconds=1))
+        replacement, replacement_reason = atomic_start(
+            "Replacement grant",
+            ("linkedin",),
+            None,
+            now=now + timedelta(seconds=2),
+        )
+        assert isinstance(replacement, GoalAccessInfo)
+        assert replacement_reason == ""
+        return started, reason
+
+    monkeypatch.setattr(state, "start_goal_access", start_then_replace)
+
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Original route grant",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+
+    assert response.status_code == 302
+    assert state.goal_access.goal == "Replacement grant"
+    assert session_events(client)[-1]["goal"] == "Original route grant"
+    assert [
+        kind for kind, _ in messages.calls if kind.startswith("goal_access_")
+    ] == []
+    assert "x.com" in blocker.applied[-1]
+    assert "linkedin.com" not in blocker.applied[-1]
+
+
+def test_concurrent_start_and_stop_keep_lifecycle_events_and_speech_ordered(
+    tmp_path,
+    monkeypatch,
+):
+    """Threaded Flask requests cannot publish an end before its start."""
+
+    client, state, _, speech = make_ui(tmp_path)
+    app = client.application
+    client.post("/start", data={"topic": "research"})
+    original_start = state.start_goal_access
+    original_stop = state.stop_goal_access
+    grant_mutated = threading.Event()
+    release_start = threading.Event()
+    stop_state_entered = threading.Event()
+
+    def paused_start(*args, **kwargs):
+        result = original_start(*args, **kwargs)
+        grant_mutated.set()
+        assert release_start.wait(timeout=2)
+        return result
+
+    def observed_stop(*args, **kwargs):
+        stop_state_entered.set()
+        return original_stop(*args, **kwargs)
+
+    monkeypatch.setattr(state, "start_goal_access", paused_start)
+    monkeypatch.setattr(state, "stop_goal_access", observed_stop)
+    responses = {}
+
+    def post_start():
+        with app.test_client() as threaded_client:
+            responses["start"] = threaded_client.post(
+                "/goal-access",
+                data={
+                    "goal": "fetch source",
+                    "allowed_sites": ["twitter"],
+                    "duration_mode": "timed",
+                    "minutes": "5",
+                },
+            ).status_code
+
+    def post_stop():
+        with app.test_client() as threaded_client:
+            responses["stop"] = threaded_client.post(
+                "/goal-access/stop"
+            ).status_code
+
+    start_thread = threading.Thread(target=post_start)
+    stop_thread = threading.Thread(target=post_stop)
+    start_thread.start()
+    assert grant_mutated.wait(timeout=2)
+    stop_thread.start()
+    assert not stop_state_entered.wait(timeout=0.2)
+    release_start.set()
+    start_thread.join(timeout=2)
+    stop_thread.join(timeout=2)
+
+    assert not start_thread.is_alive() and not stop_thread.is_alive()
+    assert stop_state_entered.is_set()
+    assert responses == {"start": 302, "stop": 302}
+    assert [event["event"] for event in session_events(client)][-2:] == [
+        "goal_access_started",
+        "goal_access_ended",
+    ]
+    assert speech.spoken[-2:] == ["<goal_access_start>", "<goal_access_end>"]
+    assert state.goal_access is None
+
+
+def test_concurrent_goal_start_and_break_keep_suspension_ordered(
+    tmp_path,
+    monkeypatch,
+):
+    """A break cannot publish before the grant start it will suspend."""
+
+    client, state, _, speech = make_ui(tmp_path)
+    app = client.application
+    client.post("/start", data={"topic": "research"})
+    original_goal_start = state.start_goal_access
+    original_break_start = state.start_break
+    grant_mutated = threading.Event()
+    release_goal_start = threading.Event()
+    break_state_entered = threading.Event()
+
+    def paused_goal_start(*args, **kwargs):
+        result = original_goal_start(*args, **kwargs)
+        grant_mutated.set()
+        assert release_goal_start.wait(timeout=2)
+        return result
+
+    def observed_break_start(*args, **kwargs):
+        break_state_entered.set()
+        return original_break_start(*args, **kwargs)
+
+    monkeypatch.setattr(state, "start_goal_access", paused_goal_start)
+    monkeypatch.setattr(state, "start_break", observed_break_start)
+
+    def post_goal_start():
+        with app.test_client() as threaded_client:
+            assert threaded_client.post(
+                "/goal-access",
+                data={
+                    "goal": "fetch source",
+                    "allowed_sites": ["twitter"],
+                    "duration_mode": "timed",
+                    "minutes": "5",
+                },
+            ).status_code == 302
+
+    def post_break():
+        with app.test_client() as threaded_client:
+            assert threaded_client.post(
+                "/break",
+                data={
+                    "purpose": "stretch",
+                    "minutes": "1",
+                    "kind": "away",
+                    "allowed_sites": "",
+                    "allowed_apps": "",
+                },
+            ).status_code == 302
+
+    goal_thread = threading.Thread(target=post_goal_start)
+    break_thread = threading.Thread(target=post_break)
+    goal_thread.start()
+    assert grant_mutated.wait(timeout=2)
+    break_thread.start()
+    assert not break_state_entered.wait(timeout=0.2)
+    release_goal_start.set()
+    goal_thread.join(timeout=2)
+    break_thread.join(timeout=2)
+
+    assert not goal_thread.is_alive() and not break_thread.is_alive()
+    assert break_state_entered.is_set()
+    assert [event["event"] for event in session_events(client)][-2:] == [
+        "goal_access_started",
+        "break_start",
+    ]
+    assert speech.spoken[-2:] == ["<goal_access_start>", "<break_ack>"]
+    snapshot = state.status_snapshot()
+    assert snapshot["mode"] == "break"
+    assert snapshot["goal_access"]["suspended"] is True
+
+
+def test_production_worker_preserves_goal_start_before_break_ack(tmp_path):
+    """Async model generation cannot reorder adjacent lifecycle speech."""
+
+    state = SessionState()
+    blocker = FakeBlocker()
+    store = ResultsStore(tmp_path)
+    messages = BlockingGoalAccessMessages()
+    speech = FakeSpeech()
+    delivery = GoalAccessFeedbackQueue(state, messages, speech)
+    app = create_app(
+        state=state,
+        blocker=blocker,
+        store=store,
+        messages=messages,
+        speech=speech,
+        goal_access_feedback=delivery,
+    )
+    app.testing = True
+    client = app.test_client()
+    try:
+        client.post("/start", data={"topic": "research"})
+        assert delivery.wait_idle(timeout=2)
+
+        started = client.post(
+            "/goal-access",
+            data={
+                "goal": "Fetch one source",
+                "allowed_sites": ["twitter"],
+                "duration_mode": "timed",
+                "minutes": "5",
+            },
+        )
+        assert started.status_code == 302
+        assert messages.started.wait(timeout=2)
+
+        break_response = client.post(
+            "/break",
+            data={
+                "purpose": "stretch",
+                "minutes": "1",
+                "kind": "away",
+            },
+        )
+        assert break_response.status_code == 302
+        assert state.mode is Mode.BREAK
+        assert speech.spoken == ["<good_luck>"]
+
+        messages.release.set()
+        assert delivery.wait_idle(timeout=2)
+        assert speech.spoken[-2:] == [
+            "<goal_access_start>",
+            "<break_ack>",
+        ]
+    finally:
+        messages.release.set()
+        delivery.stop()
+        delivery.thread.join(timeout=2)
+
+
+def test_goal_access_start_hosts_failure_keeps_active_record_retryable(tmp_path):
+    """A failed opening write retains the exact active grant and its event."""
+
+    blocker = FailOnApplyBlocker(fail_on_call=2)
+    client, state, blocker, speech = make_ui(tmp_path, blocker=blocker)
+    client.post("/start", data={"topic": "research"})
+
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch one source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+
+    assert response.status_code == 503
+    assert "pending retry" in response.get_data(as_text=True).lower()
+    access = state.goal_access
+    assert isinstance(access, GoalAccessInfo)
+    assert access.goal == "Fetch one source"
+    assert state.enforcement_dirty is True
+    event = session_events(client)[-1]
+    assert event["event"] == "goal_access_started"
+    assert event["goal"] == access.goal
+    assert event["started_at"] == access.start_time.isoformat()
+    assert speech.spoken == ["<good_luck>"]
+    status = client.get("/status").get_json()
+    assert status["goal_access"]["goal"] == access.goal
+    assert status["enforcement"]["reconciliation_pending"] is True
+
+    goal_event_count = len([
+        event for event in session_events(client)
+        if event["event"].startswith("goal_access_")
+    ])
+    assert client.post("/agentic", data={}).status_code == 302
+    assert state.enforcement_dirty is False
+    assert len([
+        event for event in session_events(client)
+        if event["event"].startswith("goal_access_")
+    ]) == goal_event_count
+    assert "x.com" not in blocker.applied[-1]
+    assert speech.spoken == ["<good_luck>", "<goal_access_start>"]
+
+
+def test_goal_start_event_failure_does_not_skip_opening_and_retries(tmp_path):
+    """JSONL recovery gates speech but never delays successful enforcement."""
+
+    store = RetryableEventStore(tmp_path)
+    messages = FakeMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        messages=messages,
+        store=store,
+    )
+    client.post("/start", data={"topic": "research"})
+    store.failures_remaining = 2
+
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch one source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+
+    assert response.status_code == 302
+    assert state.goal_access is not None
+    assert state.enforcement_dirty is False
+    assert "x.com" not in blocker.applied[-1]
+    assert store.session_events_pending is True
+    assert speech.spoken == ["<good_luck>"]
+
+    scheduler = Scheduler(
+        state=state,
+        blocker=blocker,
+        store=store,
+        analyzer=object(),
+        messages=messages,
+        speech=speech,
+        capture_interval_s=300,
+        kill_interval_s=3,
+        kill_fn=lambda targets: [],
+    )
+    scheduler._enforcer_tick()
+
+    assert store.session_events_pending is False
+    assert session_events(client)[-1]["event"] == "goal_access_started"
+    assert speech.spoken[-1] == "<goal_access_start>"
+
+
+def test_failed_goal_access_start_is_not_spoken_after_timer_expiry(tmp_path):
+    """Expiry cancels an opening acknowledgment that was never enforced."""
+
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    blocker = FailOnApplyBlocker(fail_on_call=2)
+    messages = FakeMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+        messages=messages,
+        blocker=blocker,
+    )
+    scheduler = Scheduler(
+        state=state,
+        blocker=blocker,
+        store=ResultsStore(tmp_path),
+        analyzer=object(),
+        messages=messages,
+        speech=speech,
+        capture_interval_s=300,
+        kill_interval_s=3,
+        kill_fn=lambda targets: [],
+        now_fn=lambda: clock["now"],
+    )
+    client.post("/start", data={"topic": "research"})
+    failed = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch one source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "1",
+        },
+    )
+    assert failed.status_code == 503
+
+    clock["now"] += timedelta(minutes=1)
+    result = scheduler._enforcer_tick(now=clock["now"])
+
+    assert result["goal_access_ended"] is True
+    assert state.goal_access is None
+    assert state.enforcement_dirty is False
+    assert speech.spoken == ["<good_luck>", "<goal_access_end>"]
+    assert [
+        kind for kind, _ in messages.calls if kind.startswith("goal_access_")
+    ] == ["goal_access_end"]
+    grant_events = [
+        event for event in session_events(client)
+        if event["event"].startswith("goal_access_")
+    ]
+    assert [event["event"] for event in grant_events] == [
+        "goal_access_started",
+        "goal_access_ended",
+    ]
+    assert grant_events[-1]["reason"] == "expired"
+
+
+def test_failed_goal_access_start_is_not_spoken_after_session_replacement(
+    tmp_path,
+):
+    """A replacement session cancels an unapplied old-grant acknowledgment."""
+
+    blocker = FailOnApplyBlocker(fail_on_call=2)
+    messages = FakeMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        messages=messages,
+        blocker=blocker,
+    )
+    client.post("/start", data={"topic": "old task"})
+    failed = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch one source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+    assert failed.status_code == 503
+
+    replacement = client.post("/start", data={"topic": "replacement task"})
+
+    assert replacement.status_code == 302
+    assert state.topic == "replacement task"
+    assert state.goal_access is None
+    assert state.enforcement_dirty is False
+    assert speech.spoken == ["<good_luck>", "<good_luck>"]
+    assert [
+        kind for kind, _ in messages.calls if kind.startswith("goal_access_")
+    ] == []
+    grant_events = [
+        event for event in session_events(client)
+        if event["event"].startswith("goal_access_")
+    ]
+    assert [event["event"] for event in grant_events] == [
+        "goal_access_started",
+        "goal_access_ended",
+    ]
+    assert grant_events[-1]["reason"] == "session_replaced"
+
+
+def test_failed_goal_access_start_waits_through_break_suspension(tmp_path):
+    """A successful BREAK write is not mistaken for opening the grant."""
+
+    blocker = FailOnApplyBlocker(fail_on_call=2)
+    messages = FakeMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        messages=messages,
+        blocker=blocker,
+    )
+    client.post("/start", data={"topic": "research"})
+    failed = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch one source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+    assert failed.status_code == 503
+
+    started_break = client.post(
+        "/break",
+        data={
+            "purpose": "stretch",
+            "minutes": "1",
+            "kind": "away",
+        },
+    )
+
+    assert started_break.status_code == 302
+    assert state.mode is Mode.BREAK
+    assert speech.spoken == ["<good_luck>", "<break_ack>"]
+    assert [
+        kind for kind, _ in messages.calls if kind.startswith("goal_access_")
+    ] == []
+
+    resumed = client.post("/break/stop")
+
+    assert resumed.status_code == 302
+    assert state.mode is Mode.ON
+    assert state.enforcement_dirty is False
+    assert speech.spoken[-2:] == [
+        "<goal_access_start>",
+        "<break_end_ack>",
+    ]
+
+
+def test_slow_goal_feedback_cannot_delay_expiry_or_reblocking(tmp_path):
+    """Optional model work runs outside the wall-clock policy lifecycle."""
+
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    messages = BlockingGoalAccessMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+        messages=messages,
+    )
+    app = client.application
+    client.post("/start", data={"topic": "research"})
+    responses = {}
+
+    def start_grant():
+        with app.test_client() as threaded_client:
+            responses["start"] = threaded_client.post(
+                "/goal-access",
+                data={
+                    "goal": "Fetch one source",
+                    "allowed_sites": ["twitter"],
+                    "duration_mode": "timed",
+                    "minutes": "1",
+                },
+            ).status_code
+
+    start_thread = threading.Thread(target=start_grant)
+    start_thread.start()
+    assert messages.started.wait(timeout=2)
+    assert state.goal_access is not None
+    assert "x.com" not in blocker.applied[-1]
+
+    scheduler = Scheduler(
+        state=state,
+        blocker=blocker,
+        store=ResultsStore(tmp_path),
+        analyzer=object(),
+        messages=messages,
+        speech=speech,
+        capture_interval_s=300,
+        kill_interval_s=3,
+        kill_fn=lambda targets: [],
+        now_fn=lambda: clock["now"],
+    )
+    clock["now"] += timedelta(minutes=1)
+    expiry_result = {}
+
+    def expire_grant():
+        expiry_result.update(scheduler._enforcer_tick())
+
+    expiry_thread = threading.Thread(target=expire_grant)
+    expiry_thread.start()
+    deadline = time.monotonic() + 2
+    while (
+        (state.goal_access is not None or state.enforcement_dirty)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+
+    assert state.goal_access is None
+    assert state.enforcement_dirty is False
+    assert "x.com" in blocker.applied[-1]
+    assert expiry_thread.is_alive()  # waits only for ordered feedback delivery
+
+    messages.release.set()
+    start_thread.join(timeout=2)
+    expiry_thread.join(timeout=2)
+    assert not start_thread.is_alive() and not expiry_thread.is_alive()
+    assert responses["start"] == 302
+    assert expiry_result["goal_access_ended"] is True
+    assert speech.spoken[-2:] == [
+        "<goal_access_start>",
+        "<goal_access_end>",
+    ]
+
+
+def test_goal_access_stop_hosts_failure_records_and_stays_retryable(tmp_path):
+    """A failed re-block defers its one acknowledgment until retry succeeds."""
+
+    blocker = FailOnApplyBlocker(fail_on_call=3)
+    client, state, blocker, speech = make_ui(tmp_path, blocker=blocker)
+    client.post("/start", data={"topic": "research"})
+    client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch one source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+
+    response = client.post("/goal-access/stop")
+
+    assert response.status_code == 503
+    assert "pending retry" in response.get_data(as_text=True).lower()
+    assert state.goal_access is None
+    assert state.enforcement_dirty is True
+    event = session_events(client)[-1]
+    assert event["event"] == "goal_access_ended"
+    assert event["goal"] == "Fetch one source"
+    assert event["reason"] == "manual"
+    assert speech.spoken == ["<good_luck>", "<goal_access_start>"]
+    status = client.get("/status").get_json()
+    assert status["goal_access"] is None
+    assert status["enforcement"]["reconciliation_pending"] is True
+
+    assert client.post("/agentic", data={}).status_code == 302
+    assert state.enforcement_dirty is False
+    assert "x.com" in blocker.applied[-1]
+    assert speech.spoken == [
+        "<good_luck>",
+        "<goal_access_start>",
+        "<goal_access_end>",
+    ]
+
+
+def test_route_recovery_orders_expiry_event_and_feedback_before_replacement(
+    tmp_path,
+):
+    """A route may recover expiry enforcement without crossing lifecycle order."""
+
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    blocker = FailOnApplyBlocker(fail_on_call=3)
+    messages = FakeMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+        messages=messages,
+        blocker=blocker,
+    )
+    store = ResultsStore(tmp_path)
+    scheduler = Scheduler(
+        state=state,
+        blocker=blocker,
+        store=store,
+        analyzer=object(),
+        messages=messages,
+        speech=speech,
+        capture_interval_s=300,
+        kill_interval_s=3,
+        kill_fn=lambda targets: [],
+        now_fn=lambda: clock["now"],
+    )
+    client.post("/start", data={"topic": "research"})
+    client.post(
+        "/goal-access",
+        data={
+            "goal": "old timed goal",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "1",
+        },
+    )
+    clock["now"] += timedelta(minutes=1)
+
+    failed = scheduler._enforcer_tick(now=clock["now"])
+
+    assert failed["status"] == "enforcement_failed"
+    assert speech.spoken[-1] == "<goal_access_start>"
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "replacement goal",
+            "allowed_sites": ["reddit"],
+            "duration_mode": "session_end",
+        },
+    )
+
+    assert response.status_code == 302
+    grant_events = [
+        event for event in session_events(client)
+        if event["event"].startswith("goal_access_")
+    ]
+    assert [(event["event"], event["goal"]) for event in grant_events] == [
+        ("goal_access_started", "old timed goal"),
+        ("goal_access_ended", "old timed goal"),
+        ("goal_access_started", "replacement goal"),
+    ]
+    assert speech.spoken[-2:] == [
+        "<goal_access_end>",
+        "<goal_access_start>",
+    ]
+    assert [
+        kind for kind, _ in messages.calls if kind.startswith("goal_access_")
+    ][-2:] == ["goal_access_end", "goal_access_start"]
+    assert state.goal_access is not None
+    assert state.goal_access.goal == "replacement goal"
+    assert state.enforcement_dirty is False
+
+
+def test_goal_access_until_session_end_has_no_expiry(ui):
+    client, state, _, speech = ui
+    client.post("/start", data={"topic": "research"})
+
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Use the forum as a research source",
+            "allowed_sites": ["eaforum"],
+            "duration_mode": "session_end",
+            # Browsers may still submit the duration control; session-end mode
+            # deliberately ignores that unrelated value.
+            "minutes": "10",
+        },
+    )
+
+    assert response.status_code == 302
+    assert state.goal_access.end_time is None
+    assert state.goal_access.requested_minutes is None
+    assert speech.spoken[-1] == "<goal_access_start>"
+    event = session_events(client)[-1]
+    assert event["expires_at"] is None
+    assert event["requested_minutes"] is None
+    assert event["until_session_end"] is True
+
+
+def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    client, state, blocker, _ = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+    )
+    client.post("/start", data={"topic": "research"})
+    client.post(
+        "/goal-access",
+        data={
+            "goal": "Collect reactions",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "10",
+        },
+    )
+
+    active = client.get("/status").get_json()["goal_access"]
+    assert active == {
+        "goal": "Collect reactions",
+        "allowed_sites": ["twitter"],
+        "allowed_site_labels": ["X / Twitter"],
+        "started_at": "2026-07-20T09:00:00",
+        "expires_at": "2026-07-20T09:10:00",
+        "requested_minutes": 10,
+        "remaining_s": 600,
+        "until_session_end": False,
+        "suspended": False,
+    }
+    assert "x.com" not in blocker.applied[-1]
+
+    clock["now"] += timedelta(minutes=1)
+    client.post(
+        "/break",
+        data={"purpose": "stretch", "minutes": "2", "kind": "away"},
+    )
+
+    suspended = client.get("/status").get_json()["goal_access"]
+    assert state.goal_access is not None
+    assert suspended["suspended"] is True
+    assert suspended["remaining_s"] == 540
+    assert "x.com" in blocker.applied[-1]
+
+    client.post("/break/stop")
+    resumed = client.get("/status").get_json()["goal_access"]
+    assert resumed["suspended"] is False
+    assert resumed["remaining_s"] == 540
+    assert "x.com" not in blocker.applied[-1]
+
+
+@pytest.mark.parametrize(
+    ("data", "expected_error"),
+    [
+        (
+            {
+                "goal": "",
+                "allowed_sites": ["twitter"],
+                "duration_mode": "timed",
+                "minutes": "10",
+            },
+            "goal",
+        ),
+        (
+            {
+                "goal": "Research",
+                "duration_mode": "timed",
+                "minutes": "10",
+            },
+            "website",
+        ),
+        (
+            {
+                "goal": "Research",
+                "allowed_sites": ["unknown"],
+                "duration_mode": "timed",
+                "minutes": "10",
+            },
+            "unknown",
+        ),
+        (
+            {
+                "goal": "Research",
+                "allowed_sites": ["twitter"],
+                "duration_mode": "forever",
+                "minutes": "10",
+            },
+            "duration",
+        ),
+        (
+            {
+                "goal": "Research",
+                "allowed_sites": ["twitter"],
+                "duration_mode": "timed",
+                "minutes": "",
+            },
+            "minutes",
+        ),
+        (
+            {
+                "goal": "Research",
+                "allowed_sites": ["twitter"],
+                "duration_mode": "timed",
+                "minutes": "1.5",
+            },
+            "minutes",
+        ),
+        (
+            {
+                "goal": "Research",
+                "allowed_sites": ["twitter"],
+                "duration_mode": "timed",
+                "minutes": "0",
+            },
+            "1",
+        ),
+        (
+            {
+                "goal": "Research",
+                "allowed_sites": ["twitter"],
+                "duration_mode": "timed",
+                "minutes": "241",
+            },
+            "240",
+        ),
+    ],
+)
+def test_goal_access_rejects_malformed_forms_before_side_effects(
+    ui,
+    data,
+    expected_error,
+):
+    client, state, blocker, speech = ui
+    client.post("/start", data={"topic": "t"})
+    applied_count = len(blocker.applied)
+    spoken_count = len(speech.spoken)
+    event_count = len(session_events(client))
+
+    response = client.post("/goal-access", data=data)
+
+    assert response.status_code == 400
+    assert expected_error in response.get_data(as_text=True).lower()
+    assert state.goal_access is None
+    assert len(blocker.applied) == applied_count
+    assert len(speech.spoken) == spoken_count
+    assert len(session_events(client)) == event_count
+
+
+def test_goal_access_requires_an_active_on_session(ui):
+    client, state, blocker, speech = ui
+
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch a citation",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+
+    assert response.status_code == 400
+    assert state.goal_access is None
+    assert blocker.applied == []
+    assert speech.spoken == []
+
+
+def test_second_goal_access_is_rejected_without_changing_the_first(ui):
+    client, state, blocker, speech = ui
+    client.post("/start", data={"topic": "t"})
+    client.post(
+        "/goal-access",
+        data={
+            "goal": "First source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+    first = state.goal_access
+    applied_count = len(blocker.applied)
+    spoken_count = len(speech.spoken)
+    event_count = len(session_events(client))
+
+    response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Second source",
+            "allowed_sites": ["linkedin"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+
+    assert response.status_code == 400
+    assert state.goal_access == first
+    assert len(blocker.applied) == applied_count
+    assert len(speech.spoken) == spoken_count
+    assert len(session_events(client)) == event_count
+
+
+def test_goal_access_can_repeat_after_manual_stop(tmp_path):
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    messages = FakeMessages()
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+        messages=messages,
+    )
+    client.post("/start", data={"topic": "research"})
+    allowance_before = state.social_minutes_remaining(now=clock["now"])
+    client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch first source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "10",
+        },
+    )
+    clock["now"] += timedelta(minutes=2)
+
+    stop_response = client.post("/goal-access/stop")
+
+    assert stop_response.status_code == 302
+    assert state.goal_access is None
+    assert "x.com" in blocker.applied[-1]
+    assert speech.spoken[-1] == "<goal_access_end>"
+    assert messages.calls[-1][0] == "goal_access_end"
+    assert messages.calls[-1][1]["end_reason"] == "manual"
+    ended = session_events(client)[-1]
+    assert ended["event"] == "goal_access_ended"
+    assert ended["reason"] == "manual"
+    assert ended["started_at"] == "2026-07-20T09:00:00"
+    assert ended["ended_at"] == "2026-07-20T09:02:00"
+    assert ended["requested_minutes"] == 10
+
+    repeat_response = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch second source",
+            "allowed_sites": ["linkedin"],
+            "duration_mode": "session_end",
+            "minutes": "10",
+        },
+    )
+
+    assert repeat_response.status_code == 302
+    assert state.goal_access.goal == "Fetch second source"
+    assert state.goal_access.allowed_sites == ("linkedin",)
+    assert state.social_minutes_remaining(now=clock["now"]) == allowance_before
+    assert [event["event"] for event in session_events(client)] == [
+        "session_start",
+        "goal_access_started",
+        "goal_access_ended",
+        "goal_access_started",
+    ]
+
+
+def test_goal_access_stop_without_active_grant_is_side_effect_free(ui):
+    client, state, blocker, speech = ui
+    client.post("/start", data={"topic": "t"})
+    applied_count = len(blocker.applied)
+    spoken_count = len(speech.spoken)
+    event_count = len(session_events(client))
+
+    response = client.post("/goal-access/stop")
+
+    assert response.status_code == 302
+    assert state.goal_access is None
+    assert len(blocker.applied) == applied_count
+    assert len(speech.spoken) == spoken_count
+    assert len(session_events(client)) == event_count
+
+
+def test_goal_access_state_changes_survive_feedback_failures(tmp_path):
+    clock = {"now": datetime(2026, 7, 20, 9, 0, 0)}
+    client, state, blocker, speech = make_ui(
+        tmp_path,
+        now_fn=lambda: clock["now"],
+        messages=FailingGoalAccessMessages(),
+    )
+    client.post("/start", data={"topic": "t"})
+
+    started = client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+    assert started.status_code == 302
+    assert state.goal_access is not None
+    assert "x.com" not in blocker.applied[-1]
+    assert session_events(client)[-1]["event"] == "goal_access_started"
+
+    clock["now"] += timedelta(minutes=1)
+    stopped = client.post("/goal-access/stop")
+
+    assert stopped.status_code == 302
+    assert state.goal_access is None
+    assert "x.com" in blocker.applied[-1]
+    assert session_events(client)[-1]["event"] == "goal_access_ended"
+    assert speech.spoken == ["<good_luck>"]
+
+
+def test_replacement_session_records_goal_access_end_without_extra_end_speech(ui):
+    client, state, _, speech = ui
+    client.post("/start", data={"topic": "first"})
+    client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "session_end",
+            "minutes": "10",
+        },
+    )
+
+    response = client.post("/start", data={"topic": "second"})
+
+    assert response.status_code == 302
+    assert state.goal_access is None
+    assert [event["event"] for event in session_events(client)][-2:] == [
+        "goal_access_ended",
+        "session_start",
+    ]
+    assert session_events(client)[-2]["reason"] == "session_replaced"
+    assert speech.spoken == [
+        "<good_luck>",
+        "<goal_access_start>",
+        "<good_luck>",
+    ]
+
+
+def test_disable_records_goal_access_end_without_extra_end_speech(ui):
+    client, state, _, speech = ui
+    client.post("/start", data={"topic": "t"})
+    client.post(
+        "/goal-access",
+        data={
+            "goal": "Fetch source",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "session_end",
+            "minutes": "10",
+        },
+    )
+
+    response = client.post(
+        "/disable",
+        data={"phrase": CONFIRMATION_PHRASE},
+    )
+
+    assert response.status_code == 302
+    assert state.goal_access is None
+    assert [event["event"] for event in session_events(client)][-2:] == [
+        "goal_access_ended",
+        "disabled",
+    ]
+    assert session_events(client)[-2]["reason"] == "disabled"
+    assert speech.spoken == ["<good_luck>", "<goal_access_start>"]
 
 
 def test_disable_needs_exact_phrase(ui):
@@ -331,6 +1551,7 @@ def test_status_json_shape(ui):
         "allowed_sites": [],
         "allowed_site_labels": [],
     }
+    assert data["goal_access"] is None
     assert data["enforcement"]["blocked_domain_count"] > 0
     assert data["runtime"]["loops"]["monitor"]["next_due_in_s"] == 120
     assert response.headers["Cache-Control"] == "no-store"

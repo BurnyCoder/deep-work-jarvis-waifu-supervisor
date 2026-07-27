@@ -641,6 +641,76 @@ progress::-moz-progress-bar {
   border-color: rgba(255, 123, 131, 0.25);
 }
 
+.goal-access-card {
+  border-color: rgba(117, 185, 255, 0.25);
+}
+
+.goal-access-active {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(117, 185, 255, 0.28);
+  border-radius: var(--radius-medium);
+  background: var(--blue-soft);
+}
+
+.goal-access-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(16rem, 0.8fr);
+  gap: 1rem;
+}
+
+.goal-access-goal {
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+  font-size: 1.15rem;
+  font-weight: 750;
+}
+
+.goal-access-facts {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+}
+
+.goal-access-facts div {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: rgba(10, 12, 16, 0.35);
+}
+
+.goal-access-facts dt {
+  color: var(--muted);
+  font-size: 0.73rem;
+  font-weight: 700;
+}
+
+.goal-access-facts dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+#goal-access-state[data-state="active"] {
+  border-color: rgba(102, 227, 180, 0.3);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+#goal-access-state[data-state="suspended"],
+#goal-access-state[data-state="pending"] {
+  border-color: rgba(255, 203, 107, 0.35);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.field[data-duration-disabled="true"] {
+  opacity: 0.52;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -809,6 +879,13 @@ button:hover {
   transform: translateY(-1px);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.45);
+  opacity: 0.5;
+  transform: none;
+}
+
 button:active {
   transform: translateY(0);
 }
@@ -890,7 +967,8 @@ summary:focus-visible {
 
   .metric-grid,
   .controls-grid,
-  .form-grid {
+  .form-grid,
+  .goal-access-summary {
     grid-template-columns: 1fr;
   }
 
