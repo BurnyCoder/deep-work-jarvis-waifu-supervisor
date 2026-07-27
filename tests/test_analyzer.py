@@ -174,6 +174,49 @@ def test_request_marks_task_allowed_sites_as_conditional_not_automatic_progress(
     assert "explicitly lists" in SYSTEM_PROMPT.lower()
 
 
+def test_request_distinguishes_temporary_goal_access_from_permanent_task_sites(
+    tmp_path,
+):
+    analyzer, client, store = make_analyzer(tmp_path)
+    full_goal = (
+        "Find the complete launch quotation and its surrounding context, then "
+        "copy both into the research notes without omitting any qualifiers."
+    )
+
+    analyzer.add_capture(
+        save_named_capture(store, "01.jpg", "red"),
+        topic="prepare the product launch brief",
+        allowed_sites=("documentation",),
+        goal_access_goal=full_goal,
+        goal_access_sites=("twitter", "youtube"),
+    )
+
+    header = client.responses.last_kwargs["input"][-1]["content"][0]["text"]
+    assert "Permanent task-required website groups: documentation" in header
+    assert "Temporary goal-access website groups: twitter, youtube" in header
+    assert full_goal in header
+    assert "both the overall deep-work topic and the explicit temporary goal" in header
+    assert "never automatically productive" in header
+    system_prompt = SYSTEM_PROMPT.lower()
+    assert "permanently required" in system_prompt
+    assert "temporary goal access" in system_prompt
+    assert "both the overall topic and the explicit temporary goal" in system_prompt
+
+
+def test_request_without_goal_access_remains_backward_compatible(tmp_path):
+    analyzer, client, store = make_analyzer(tmp_path)
+
+    analyzer.add_capture(
+        save_named_capture(store, "01.jpg", "red"),
+        topic="write the thesis",
+        allowed_sites=("documentation",),
+    )
+
+    header = client.responses.last_kwargs["input"][-1]["content"][0]["text"]
+    assert "Permanent task-required website groups: documentation" in header
+    assert "No temporary goal-access grant is active" in header
+
+
 def test_request_explicitly_marks_warmup_then_full_window(tmp_path):
     analyzer, client, store = make_analyzer(tmp_path, window_size=3)
     paths = [

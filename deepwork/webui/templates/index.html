@@ -256,6 +256,104 @@
 
           </section>
 
+          <section class="control-card control-card-wide goal-access-card"
+                   aria-labelledby="goal-access-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Monitored task exception</p>
+                <h3 id="goal-access-heading">Temporary goal-based website access</h3>
+              </div>
+              <span id="goal-access-state" class="count-badge"
+                    data-state="idle">Ready</span>
+            </div>
+            <p class="control-description">
+              Open any configured website groups for a concrete task goal. Focus
+              monitoring continues, and these grants never use social allowance.
+            </p>
+
+            <form id="goal-access-form" method="post" action="/goal-access"
+                  class="form-grid{% if goal_access_active %} is-hidden{% endif %}">
+              <div class="field field-wide">
+                <label for="goal-access-goal">What do you need to achieve?</label>
+                <input id="goal-access-goal" name="goal"
+                       placeholder="Collect source material for the current report"
+                       required>
+              </div>
+
+              <div class="field">
+                <label for="goal-access-duration-mode">Access duration</label>
+                <select id="goal-access-duration-mode" name="duration_mode">
+                  <option value="timed">For a set number of minutes</option>
+                  <option value="session_end">Until this focused session ends</option>
+                </select>
+              </div>
+
+              <div id="goal-access-minutes-field" class="field">
+                <label for="goal-access-minutes">Timed duration</label>
+                <div class="input-suffix">
+                  <input id="goal-access-minutes" name="minutes" type="number"
+                         min="1" max="240" value="10" required>
+                  <span>minutes</span>
+                </div>
+              </div>
+
+              <fieldset class="site-choice-field field-wide">
+                <legend>Websites needed for this goal</legend>
+                <p>
+                  Choose one or more groups. Allowed sites still have to serve
+                  the stated goal to count as productive work.
+                </p>
+                <div class="site-choice-grid">
+                  {% for key, label in site_options %}
+                    <label class="site-choice" for="goal-site-{{ key }}">
+                      <input id="goal-site-{{ key }}" type="checkbox"
+                             name="allowed_sites" value="{{ key }}">
+                      <span>{{ label }}</span>
+                    </label>
+                  {% endfor %}
+                </div>
+              </fieldset>
+
+              <button id="goal-access-submit" type="submit"
+                      class="secondary-button field-wide">
+                Start temporary access
+              </button>
+              <p id="goal-access-form-state"
+                 class="control-description field-wide" role="status">
+                Start a focused session before requesting temporary access.
+              </p>
+            </form>
+
+            <div id="goal-access-active"
+                 class="goal-access-active{% if not goal_access_active %} is-hidden{% endif %}">
+              <div class="goal-access-summary">
+                <div>
+                  <p class="card-label">Current goal</p>
+                  <p id="goal-access-current-goal" class="goal-access-goal">
+                    Loading current goal…
+                  </p>
+                </div>
+                <dl class="goal-access-facts">
+                  <div>
+                    <dt>Websites</dt>
+                    <dd id="goal-access-sites">Loading…</dd>
+                  </div>
+                  <div>
+                    <dt>Access window</dt>
+                    <dd id="goal-access-timing">Loading…</dd>
+                  </div>
+                </dl>
+              </div>
+              <!-- Ending access is an independent POST and therefore a sibling,
+                   never a nested form: https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/form -->
+              <form method="post" action="/goal-access/stop" class="stack-form">
+                <button type="submit" class="primary-button">
+                  Goal complete — stop access
+                </button>
+              </form>
+            </div>
+          </section>
+
           <section class="control-card" aria-labelledby="agentic-heading">
             <h3 id="agentic-heading">Agentic mode</h3>
             <p class="control-description">

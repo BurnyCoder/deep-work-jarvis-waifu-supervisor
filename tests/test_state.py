@@ -3,12 +3,13 @@
 # `now` parameter everywhere so tests never sleep (testing-clock pattern:
 # https://docs.pytest.org/en/stable/how-to/monkeypatch.html).
 
+import threading
 from datetime import datetime, timedelta
 
 import pytest
 
 from deepwork.config import CONFIRMATION_PHRASE
-from deepwork.state import Mode, SessionState
+from deepwork.state import GoalAccessInfo, Mode, SessionState, goal_access_event
 
 T0 = datetime(2026, 7, 7, 9, 0, 0)  # fixed reference instant for all tests
 
@@ -18,6 +19,40 @@ def make_state(**kw):
     defaults = dict(daily_social_cap_min=120, project_allowlists={"ml-research": ["twitter"]})
     defaults.update(kw)
     return SessionState(**defaults)
+
+
+class RecordingBlocker:
+    """Retain each atomic hosts policy so race tests can assert final state."""
+
+    def __init__(self):
+        self.applied = []
+        self.cleared = 0
+
+    def apply(self, domains):
+        """Record the exact immutable policy passed while state is locked."""
+
+        self.applied.append(tuple(domains))
+
+    def clear(self):
+        """Record OFF reconciliation without performing a real hosts write."""
+
+        self.cleared += 1
+
+
+class FailOnceBlocker(RecordingBlocker):
+    """Model a transient hosts failure before accepting the retry."""
+
+    def __init__(self):
+        super().__init__()
+        self.attempts = 0
+
+    def apply(self, domains):
+        """Fail the first write and record the policy on the second."""
+
+        self.attempts += 1
+        if self.attempts == 1:
+            raise OSError("hosts file temporarily unavailable")
+        super().apply(domains)
 
 
 def test_starts_off_then_on_with_topic_history():
@@ -248,6 +283,255 @@ def test_task_access_remains_open_during_break_and_after_agent_finishes():
     assert "x.com" not in blocked and "reddit.com" in blocked
 
 
+def test_goal_access_validates_every_input_before_mutating_state():
+    """Invalid temporary-access requests leave the active session unchanged."""
+
+    s = make_state()
+    ok, reason = s.start_goal_access(
+        "research sources",
+        ["twitter"],
+        10,
+        now=T0,
+    )
+    assert not ok and "active session" in reason
+    assert s.goal_access is None
+
+    s.start_session("write thesis", now=T0)
+    invalid_requests = [
+        ("   ", ["twitter"], 10),
+        ("research sources", [], 10),
+        ("research sources", ["unknown"], 10),
+        ("research sources", ["twitter"], 0),
+        ("research sources", ["twitter"], 241),
+        ("research sources", ["twitter"], True),
+    ]
+    for goal, sites, minutes in invalid_requests:
+        ok, reason = s.start_goal_access(goal, sites, minutes, now=T0)
+        assert not ok and reason
+        assert s.goal_access is None
+
+
+def test_goal_access_is_free_repeatable_and_only_one_can_be_active():
+    """Sequential grants are unlimited, but concurrent grants are rejected."""
+
+    s = make_state()
+    s.start_session("publish research", now=T0)
+    allowance_before = s.social_minutes_remaining(now=T0)
+    kill_targets_before = s.effective_kill_processes()
+
+    ok, reason = s.start_goal_access(
+        "collect quotes",
+        ["reddit", "twitter", "twitter"],
+        15,
+        now=T0,
+    )
+
+    assert ok and reason == ""
+    assert s.goal_access == GoalAccessInfo(
+        goal="collect quotes",
+        start_time=T0,
+        end_time=T0 + timedelta(minutes=15),
+        requested_minutes=15,
+        allowed_sites=("reddit", "twitter"),
+    )
+    assert "reddit.com" not in s.effective_blocklist()
+    assert "x.com" not in s.effective_blocklist()
+    assert s.social_minutes_remaining(now=T0) == allowance_before
+    assert s.monitoring_active
+    assert s.effective_kill_processes() == kill_targets_before
+
+    original = s.goal_access
+    ok, reason = s.start_goal_access(
+        "a competing goal",
+        ["youtube"],
+        5,
+        now=T0 + timedelta(minutes=1),
+    )
+    assert not ok and "already active" in reason
+    assert s.goal_access == original
+
+    assert s.stop_goal_access(now=T0 + timedelta(minutes=2)) == original
+    assert s.stop_goal_access(now=T0 + timedelta(minutes=2)) is None
+    ok, reason = s.start_goal_access(
+        "publish the result",
+        ["linkedin"],
+        None,
+        now=T0 + timedelta(minutes=3),
+    )
+    assert ok and reason == ""
+    assert s.goal_access.requested_minutes is None
+    assert s.goal_access.end_time is None
+    assert "linkedin.com" not in s.effective_blocklist()
+    assert s.social_minutes_remaining(now=T0) == allowance_before
+    assert s.effective_kill_processes() == kill_targets_before
+
+
+def test_goal_access_concurrent_starts_publish_exactly_one_grant():
+    """The state lock makes two genuinely simultaneous starts all-or-nothing."""
+
+    s = make_state()
+    s.start_session("research", now=T0)
+    start_barrier = threading.Barrier(3)
+    result_lock = threading.Lock()
+    results = {}
+
+    def start(goal, site):
+        """Wait for both workers, then retain each result under a test lock."""
+
+        start_barrier.wait()
+        result = s.start_goal_access(goal, [site], 10, now=T0)
+        with result_lock:
+            results[goal] = result
+
+    workers = [
+        threading.Thread(target=start, args=("goal a", "twitter")),
+        threading.Thread(target=start, args=("goal b", "reddit")),
+    ]
+    for worker in workers:
+        worker.start()
+    start_barrier.wait()
+    for worker in workers:
+        worker.join(timeout=2)
+
+    assert not any(worker.is_alive() for worker in workers)
+    assert sum(access is not None for access, _ in results.values()) == 1
+    assert s.goal_access is not None
+    assert results[s.goal_access.goal] == (s.goal_access, "")
+
+
+def test_break_suspends_goal_sites_but_timer_continues_and_can_expire():
+    """A break re-blocks grant-only sites without pausing the grant deadline."""
+
+    s = make_state()
+    s.start_session("write thesis", now=T0, allowed_sites=["linkedin"])
+    s.start_goal_access(
+        "check discussion",
+        ["twitter", "linkedin"],
+        10,
+        now=T0,
+    )
+    s.start_break("walk", 5, "away", now=T0)
+
+    blocked = s.effective_blocklist()
+    assert "x.com" in blocked
+    assert "linkedin.com" not in blocked  # permanent task access stays open
+    assert s.status_snapshot(now=T0 + timedelta(minutes=4))["goal_access"][
+        "suspended"
+    ]
+    assert s.end_break_if_due(now=T0 + timedelta(minutes=5))
+    assert s.goal_access is not None
+    assert "x.com" not in s.effective_blocklist()
+
+    # A later break still does not pause the original absolute deadline.
+    s.start_break("walk again", 10, "away", now=T0 + timedelta(minutes=5))
+
+    ended = s.end_goal_access_if_due(now=T0 + timedelta(minutes=10))
+
+    assert ended is not None and ended.goal == "check discussion"
+    assert s.goal_access is None
+    assert s.mode is Mode.BREAK
+
+
+def test_session_boundaries_clear_goal_access_without_persisting_it():
+    """Replacement, Disable, and restart are terminal boundaries for a grant."""
+
+    s = make_state()
+    s.start_session("first", now=T0)
+    s.start_goal_access("research", ["twitter"], None, now=T0)
+
+    replaced = s.start_session("second", now=T0 + timedelta(minutes=1))
+
+    assert replaced is not None and replaced.goal == "research"
+    assert s.goal_access is None
+    s.start_goal_access("publish", ["linkedin"], None, now=T0)
+    ok, disabled = s.try_disable_with_goal_access(
+        "wrong phrase",
+        now=T0 + timedelta(minutes=2),
+    )
+    assert not ok and disabled is None
+    assert s.goal_access is not None
+    ok, disabled = s.try_disable_with_goal_access(
+        CONFIRMATION_PHRASE,
+        now=T0 + timedelta(minutes=2),
+    )
+    assert ok
+    assert disabled is not None and disabled.goal == "publish"
+    assert s.goal_access is None
+
+    restored = make_state()
+    restored.load_dict(s.to_dict())
+    assert restored.goal_access is None
+
+
+def test_goal_access_status_context_and_monitoring_context_are_complete():
+    """UI, speech, and vision receive coherent views of the same active grant."""
+
+    s = make_state()
+    s.start_session("publish research", now=T0, allowed_sites=["linkedin"])
+    s.start_goal_access(
+        "fetch exact wording",
+        ["twitter"],
+        10,
+        now=T0 + timedelta(minutes=1),
+    )
+
+    payload = s.status_snapshot(now=T0 + timedelta(minutes=4))["goal_access"]
+    assert payload == {
+        "goal": "fetch exact wording",
+        "allowed_sites": ["twitter"],
+        "allowed_site_labels": ["X / Twitter"],
+        "started_at": (T0 + timedelta(minutes=1)).isoformat(),
+        "expires_at": (T0 + timedelta(minutes=11)).isoformat(),
+        "requested_minutes": 10,
+        "remaining_s": 420,
+        "until_session_end": False,
+        "suspended": False,
+    }
+    assert "temporary access goal: fetch exact wording" in s.context_summary(
+        now=T0 + timedelta(minutes=4)
+    )
+    assert "temporary website groups selected: twitter" in s.context_summary(
+        now=T0 + timedelta(minutes=4)
+    )
+    context = s.monitoring_context()
+    assert context.session_start == T0
+    assert context.topic == "publish research"
+    assert context.permanent_sites == ("linkedin",)
+    assert context.goal_access_start_time == T0 + timedelta(minutes=1)
+    assert context.goal_access_goal == "fetch exact wording"
+    assert context.goal_access_sites == ("twitter",)
+
+
+def test_goal_access_event_is_complete_json_safe_and_canonical():
+    """Every producer serializes grant transitions through one pure helper."""
+
+    access = GoalAccessInfo(
+        goal="fetch exact wording",
+        start_time=T0,
+        end_time=T0 + timedelta(minutes=10),
+        requested_minutes=10,
+        allowed_sites=("twitter",),
+    )
+
+    assert goal_access_event(
+        "goal_access_ended",
+        access,
+        ended_at=T0 + timedelta(minutes=7),
+        reason="manual",
+    ) == {
+        "event": "goal_access_ended",
+        "goal": "fetch exact wording",
+        "allowed_sites": ["twitter"],
+        "allowed_site_labels": ["X / Twitter"],
+        "started_at": T0.isoformat(),
+        "expires_at": (T0 + timedelta(minutes=10)).isoformat(),
+        "requested_minutes": 10,
+        "until_session_end": False,
+        "ended_at": (T0 + timedelta(minutes=7)).isoformat(),
+        "reason": "manual",
+    }
+
+
 def test_effective_kill_list_honours_break_app_allowance():
     s = make_state()
     s.start_session("x", now=T0)
@@ -308,6 +592,7 @@ def test_status_snapshot_is_consistent_and_reports_live_enforcement():
         "blocked_domain_count": 0,
         "app_killer_active": False,
         "target_process_count": 0,
+        "reconciliation_pending": False,
     }
 
     s.start_session("thesis", now=T0)
@@ -403,3 +688,167 @@ def test_persistence_round_trip():
     assert restored.social_minutes_remaining(now=T0) == 105
     assert restored.previous_topics == ["write thesis"]
     assert restored.work_allowed_sites == ()       # live access never persists
+
+
+def test_goal_access_start_returns_exact_published_record():
+    """Callers receive the frozen record created inside the state lock."""
+
+    s = make_state()
+    s.start_session("research", now=T0)
+
+    access, reason = s.start_goal_access(
+        "collect citation",
+        ["twitter"],
+        10,
+        now=T0 + timedelta(minutes=1),
+    )
+
+    assert reason == ""
+    assert access is s.goal_access
+    assert access == GoalAccessInfo(
+        goal="collect citation",
+        start_time=T0 + timedelta(minutes=1),
+        end_time=T0 + timedelta(minutes=11),
+        requested_minutes=10,
+        allowed_sites=("twitter",),
+    )
+
+
+def test_enforcement_reconciliation_retries_failure_and_reports_pending():
+    """A failed hosts write stays dirty until one later atomic retry succeeds."""
+
+    s = make_state()
+    blocker = FailOnceBlocker()
+    s.start_session("write", now=T0)
+
+    assert s.enforcement_dirty
+    assert s.status_snapshot(now=T0)["enforcement"][
+        "reconciliation_pending"
+    ]
+    with pytest.raises(OSError, match="temporarily unavailable"):
+        s.reconcile_enforcement(blocker)
+
+    assert s.enforcement_dirty
+    assert s.status_snapshot(now=T0)["enforcement"][
+        "reconciliation_pending"
+    ]
+    assert s.reconcile_enforcement(blocker) is True
+    assert blocker.applied[-1] == s.effective_blocklist()
+    assert not s.enforcement_dirty
+    assert not s.status_snapshot(now=T0)["enforcement"][
+        "reconciliation_pending"
+    ]
+    assert s.reconcile_enforcement(blocker) is False
+    assert blocker.attempts == 2
+
+
+def test_reconcile_clears_hosts_when_latest_state_is_off():
+    """OFF reconciliation uses the backend clear operation under the lock."""
+
+    s = make_state()
+    blocker = RecordingBlocker()
+    s.start_session("write", now=T0)
+    s.reconcile_enforcement(blocker)
+    assert s.try_disable(CONFIRMATION_PHRASE, now=T0 + timedelta(minutes=1))
+
+    assert s.reconcile_enforcement(blocker) is True
+    assert blocker.cleared == 1
+    assert not s.enforcement_dirty
+
+
+def test_monitoring_revision_rejects_a_stale_verdict_atomically():
+    """A policy transition and verdict publication cannot cross contexts."""
+
+    s = make_state()
+    initial_revision = s.monitoring_context().revision
+    s.start_session("write", now=T0)
+    expected = s.monitoring_context()
+    assert expected.revision > initial_revision
+
+    access, reason = s.start_goal_access(
+        "check source",
+        ["twitter"],
+        5,
+        now=T0 + timedelta(minutes=1),
+    )
+    assert access is not None and reason == ""
+    assert s.monitoring_context().revision > expected.revision
+
+    accepted, outcome = s.record_verdict_if_context(
+        expected,
+        productive=False,
+        minutes=5,
+        reason="stale analysis",
+        now=T0 + timedelta(minutes=2),
+    )
+
+    assert (accepted, outcome) == (False, None)
+    assert s.last_verdict is None
+    assert s.evaluation_history == []
+
+
+def test_concurrent_reconciliations_finish_with_the_latest_state_policy():
+    """The state RLock serializes transitions with their hosts-file writes."""
+
+    class BarrierBlocker(RecordingBlocker):
+        """Pause the older apply while it holds the state reconciliation lock."""
+
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+            self.apply_started = threading.Barrier(2)
+            self.release_apply = threading.Barrier(2)
+
+        def apply(self, domains):
+            self.calls += 1
+            if self.calls == 1:
+                self.apply_started.wait(timeout=2)
+                self.release_apply.wait(timeout=2)
+            super().apply(domains)
+
+    s = make_state()
+    s.start_session("research", now=T0)
+    s.reconcile_enforcement(RecordingBlocker())
+    first, _ = s.start_goal_access("old goal", ["twitter"], 10, now=T0)
+    assert first is not None
+    blocker = BarrierBlocker()
+    errors = []
+    new_transition_attempted = threading.Event()
+
+    def stop_and_reconcile():
+        try:
+            s.stop_goal_access(now=T0 + timedelta(minutes=1))
+            s.reconcile_enforcement(blocker)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def start_new_and_reconcile():
+        try:
+            new_transition_attempted.set()
+            access, reason = s.start_goal_access(
+                "new goal",
+                ["reddit"],
+                10,
+                now=T0 + timedelta(minutes=2),
+            )
+            assert access is not None and reason == ""
+            s.reconcile_enforcement(blocker)
+        except BaseException as exc:
+            errors.append(exc)
+
+    older = threading.Thread(target=stop_and_reconcile)
+    newer = threading.Thread(target=start_new_and_reconcile)
+    older.start()
+    blocker.apply_started.wait(timeout=2)
+    newer.start()
+    assert new_transition_attempted.wait(timeout=1)
+    blocker.release_apply.wait(timeout=2)
+    older.join(timeout=2)
+    newer.join(timeout=2)
+
+    assert not older.is_alive() and not newer.is_alive()
+    assert errors == []
+    assert blocker.applied[-1] == s.effective_blocklist()
+    assert "reddit.com" not in blocker.applied[-1]
+    assert "x.com" in blocker.applied[-1]
+    assert not s.enforcement_dirty

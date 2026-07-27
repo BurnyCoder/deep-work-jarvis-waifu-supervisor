@@ -10,10 +10,45 @@ from datetime import datetime
 # Flask quickstart: https://flask.palletsprojects.com/en/stable/quickstart/
 from flask import Flask, jsonify, redirect, render_template, request
 
-from deepwork.site_access import site_labels, site_options
+from deepwork.feedback.goal_access import (
+    InlineGoalAccessFeedback,
+    queue_goal_access_feedback,
+    queue_transition_feedback,
+)
+from deepwork.site_access import normalize_site_keys, site_labels, site_options
+from deepwork.state import goal_access_event
 from deepwork.webui.status import build_status_payload, empty_runtime_snapshot
 
 log = logging.getLogger(__name__)
+
+
+def _parse_goal_access_form(form) -> tuple[str, tuple[str, ...], int | None]:
+    """Validate one untrusted grant form before state or enforcement changes."""
+
+    goal = form.get("goal", "").strip()
+    if not goal:
+        raise ValueError("A temporary-access goal is required.")
+
+    # MultiDict.getlist is required because the site picker uses repeated
+    # checkbox names: https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
+    allowed_sites = normalize_site_keys(form.getlist("allowed_sites"))
+    if not allowed_sites:
+        raise ValueError("Choose at least one website group.")
+
+    duration_mode = form.get("duration_mode", "")
+    if duration_mode not in {"timed", "session_end"}:
+        raise ValueError("Duration mode must be timed or session_end.")
+    if duration_mode == "session_end":
+        return goal, allowed_sites, None
+
+    raw_minutes = form.get("minutes", "").strip()
+    try:
+        minutes = int(raw_minutes)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Timed access minutes must be a whole number.") from exc
+    if not 1 <= minutes <= 240:
+        raise ValueError("Timed access must be between 1 and 240 minutes.")
+    return goal, allowed_sites, minutes
 
 
 def create_app(
@@ -24,11 +59,60 @@ def create_app(
     speech,
     runtime_snapshot=None,
     now_fn=None,
+    goal_access_feedback=None,
 ) -> Flask:
     app = Flask(__name__)                          # templates/ auto-discovered
     # Optional providers preserve the app factory's dependency-injected tests.
     get_runtime_snapshot = runtime_snapshot or empty_runtime_snapshot
     get_now = now_fn or datetime.now
+    goal_feedback = (
+        goal_access_feedback
+        or InlineGoalAccessFeedback(state, messages, speech)
+    )
+
+    def append_session_event(event: dict, action: str) -> None:
+        """Retain a failed JSONL append for retry without skipping policy work."""
+
+        try:
+            store.append_session_event(event)
+        except Exception:
+            log.exception("%s session-event persistence pending retry", action)
+
+    def save_state(action: str) -> None:
+        """Keep a state-file failure from preventing current hosts enforcement."""
+
+        try:
+            store.save_state(state.to_dict())
+        except Exception:
+            log.exception("%s persistent-state save failed", action)
+
+    def reconcile_or_503(action: str) -> tuple[str, int] | None:
+        """Apply the latest locked policy or expose its automatic retry state."""
+
+        retry_events = getattr(store, "retry_session_events", None)
+        if retry_events is not None:
+            try:
+                retry_events()
+            except Exception:
+                # Event durability and hosts safety are independent: continue
+                # enforcement, but keep transition speech pending behind JSONL.
+                log.exception("%s session-event retry failed", action)
+        try:
+            state.reconcile_enforcement(blocker)
+        except Exception:
+            # Dirty policy and ordered feedback remain queued for a later
+            # enforcer retry; never announce access before it is applied.
+            log.exception(
+                "%s enforcement failed; current policy is pending retry",
+                action,
+            )
+            return "State changed, but website enforcement is pending retry.", 503
+        state.mark_goal_access_feedback_policy_applied()
+        # Publishing is lock-local and fast. Slow model/TTS delivery begins
+        # only after the caller releases the lifecycle coordinator.
+        if not getattr(store, "session_events_pending", False):
+            state.release_goal_access_feedback()
+        return None
 
     @app.get("/")
     def index():
@@ -48,6 +132,7 @@ def create_app(
             mode=state.mode.value,
             projects=projects,
             site_options=site_options(),
+            goal_access_active=state.goal_access is not None,
         )
 
     @app.post("/start")
@@ -59,44 +144,159 @@ def create_app(
         project = form.get("project") or None
         selected_sites = form.getlist("allowed_sites")
         agentic = form.get("agentic") == "on"
-        try:
-            # Same-name checkbox values are retrieved with MultiDict.getlist:
-            # https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
-            state.start_session(
-                topic,
-                now=get_now(),
-                allowed_sites=selected_sites,
-                project=project,
-                agentic=agentic,
+        with state.goal_access_lifecycle():
+            started_at = get_now()
+            try:
+                # Same-name checkbox values are retrieved with MultiDict.getlist:
+                # https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
+                replaced_goal_access = state.start_session(
+                    topic,
+                    now=started_at,
+                    allowed_sites=selected_sites,
+                    project=project,
+                    agentic=agentic,
+                )
+            except ValueError as exc:
+                # Browser constraints are UX only; reject forged values before
+                # a hosts write, event, prompt, or spoken response.
+                log.warning("session start refused: %s", exc)
+                return str(exc), 400
+            except RuntimeError as exc:
+                # A late dashboard request cannot reverse terminal shutdown.
+                log.info("session start unavailable: %s", exc)
+                return str(exc), 503
+            allowed_sites = list(state.work_allowed_sites)
+            if replaced_goal_access is not None:
+                state.cancel_pending_goal_access_start(replaced_goal_access)
+                # The replacement good-luck message is sufficient spoken context.
+                append_session_event(goal_access_event(
+                    "goal_access_ended",
+                    replaced_goal_access,
+                    ended_at=started_at,
+                    reason="session_replaced",
+                ), "session-replacement-goal-access-end")
+            append_session_event({
+                "event": "session_start",
+                "topic": topic,
+                "project": state.active_project,
+                "selected_sites": list(state.task_allowed_sites),
+                "allowed_sites": allowed_sites,
+                "agentic": state.agentic_mode,
+            }, "session-start")
+            save_state("session-start")            # topic history survives restart
+            session_context = state.context_summary()
+            queue_transition_feedback(
+                state,
+                "good_luck",
+                topic=topic,
+                session_context=session_context,
             )
-        except ValueError as exc:
-            # Browser constraints are UX only; reject forged values before a
-            # hosts write, state change, event, prompt, or spoken response.
-            log.warning("session start refused: %s", exc)
-            return str(exc), 400
-        blocker.apply(state.effective_blocklist()) # enforce immediately
-        allowed_sites = list(state.work_allowed_sites)
-        store.append_session_event({
-            "event": "session_start",
-            "topic": topic,
-            "project": state.active_project,
-            "selected_sites": list(state.task_allowed_sites),
-            "allowed_sites": allowed_sites,
-            "agentic": state.agentic_mode,
-        })
-        store.save_state(state.to_dict())          # topic history survives restart
+            enforcement_error = reconcile_or_503("session-start")
+            if enforcement_error is not None:
+                return enforcement_error
+            active_project = state.active_project
+            task_sites = list(state.task_allowed_sites)
+            active_agentic = state.agentic_mode
+        goal_feedback.wake()
         log.info(
             "session started: topic=%r project=%r selected_sites=%s "
             "allowed_sites=%s agentic=%s",
             topic,
-            state.active_project,
-            list(state.task_allowed_sites),
+            active_project,
+            task_sites,
             allowed_sites,
-            state.agentic_mode,
+            active_agentic,
         )
-        # LLM writes the good-luck line, TTS speaks it ("good luck on x topic").
-        speech.say(messages.generate("good_luck", topic=topic,
-                                     session_context=state.context_summary()))
+        return redirect("/")
+
+    @app.post("/goal-access")
+    def start_goal_access():
+        """Open selected website groups for one monitored, goal-bound grant."""
+
+        try:
+            goal, allowed_sites, minutes = _parse_goal_access_form(request.form)
+        except ValueError as exc:
+            # HTML constraints are convenience only; forged requests must fail
+            # before state, hosts, records, model calls, or speech can change.
+            log.warning("goal access refused: %s", exc)
+            return str(exc), 400
+
+        with state.goal_access_lifecycle():
+            started_at = get_now()
+            try:
+                access, reason = state.start_goal_access(
+                    goal,
+                    allowed_sites,
+                    minutes,
+                    now=started_at,
+                )
+            except ValueError as exc:
+                # Keep this guard for non-HTTP state validation so route
+                # behavior stays a clean 400 as validation grows stricter.
+                log.warning("goal access refused: %s", exc)
+                return str(exc), 400
+            if access is None:
+                log.info("goal access refused: %s", reason)
+                return reason, 400
+
+            append_session_event(goal_access_event(
+                "goal_access_started",
+                access,
+            ), "goal-access-start")
+            queue_goal_access_feedback(
+                state,
+                "goal_access_start",
+                access,
+                now=started_at,
+            )
+            enforcement_error = reconcile_or_503("goal-access-start")
+            if enforcement_error is not None:
+                return enforcement_error
+        goal_feedback.wake()
+        log.info(
+            "goal access started: goal=%r sites=%s requested_minutes=%r "
+            "expires_at=%s",
+            access.goal,
+            list(access.allowed_sites),
+            access.requested_minutes,
+            access.end_time.isoformat() if access.end_time else None,
+        )
+        return redirect("/")
+
+    @app.post("/goal-access/stop")
+    def stop_goal_access():
+        """End the active grant early; stale repeated submissions are harmless."""
+
+        with state.goal_access_lifecycle():
+            stopped_at = get_now()
+            access = state.stop_goal_access(now=stopped_at)
+            if access is None:
+                log.info("goal access stop ignored - no active grant")
+                return redirect("/")
+
+            state.cancel_pending_goal_access_start(access)
+            append_session_event(goal_access_event(
+                "goal_access_ended",
+                access,
+                ended_at=stopped_at,
+                reason="manual",
+            ), "goal-access-stop")
+            queue_goal_access_feedback(
+                state,
+                "goal_access_end",
+                access,
+                now=stopped_at,
+                reason="manual",
+            )
+            enforcement_error = reconcile_or_503("goal-access-stop")
+            if enforcement_error is not None:
+                return enforcement_error
+        goal_feedback.wake()
+        log.info(
+            "goal access stopped: goal=%r sites=%s reason=manual",
+            access.goal,
+            list(access.allowed_sites),
+        )
         return redirect("/")
 
     @app.post("/break")
@@ -105,23 +305,34 @@ def create_app(
         # comma-separated site/app group names (e.g. "reddit,discord").
         form = request.form
         split = lambda s: [x.strip() for x in s.split(",") if x.strip()]
-        ok, reason = state.start_break(
-            purpose=form["purpose"], minutes=int(form["minutes"]),
-            kind=form.get("kind", "away"),
-            allowed_sites=split(form.get("allowed_sites", "")),
-            allowed_apps=split(form.get("allowed_apps", "")),
-            now=get_now(),
-        )
-        if not ok:                                 # e.g. social cap exhausted
-            log.info("break refused: %s", reason)
-            return reason, 400
-        blocker.apply(state.effective_blocklist()) # unblock allowed sites only
-        store.append_session_event({"event": "break_start", **form.to_dict()})
-        store.save_state(state.to_dict())          # allowance usage survives restart
-        # TTS confirms the break plan back to the user (spec: "TTS responds").
-        speech.say(messages.generate("break_ack", purpose=form["purpose"],
-                                     minutes=form["minutes"],
-                                     session_context=state.context_summary()))
+        with state.goal_access_lifecycle():
+            ok, reason = state.start_break(
+                purpose=form["purpose"], minutes=int(form["minutes"]),
+                kind=form.get("kind", "away"),
+                allowed_sites=split(form.get("allowed_sites", "")),
+                allowed_apps=split(form.get("allowed_apps", "")),
+                now=get_now(),
+            )
+            if not ok:                             # e.g. social cap exhausted
+                log.info("break refused: %s", reason)
+                return reason, 400
+            append_session_event({
+                "event": "break_start",
+                **form.to_dict(),
+            }, "break-start")
+            save_state("break-start")              # allowance survives restart
+            session_context = state.context_summary()
+            queue_transition_feedback(
+                state,
+                "break_ack",
+                purpose=form["purpose"],
+                minutes=form["minutes"],
+                session_context=session_context,
+            )
+            enforcement_error = reconcile_or_503("break-start")
+            if enforcement_error is not None:
+                return enforcement_error
+        goal_feedback.wake()
         return redirect("/")
 
     @app.post("/break/stop")
@@ -129,27 +340,38 @@ def create_app(
         # A state-changing form uses POST; redirecting afterward prevents a
         # browser refresh from presenting a resubmission prompt:
         # https://flask.palletsprojects.com/en/stable/quickstart/#redirects-and-errors
-        stopped_at = get_now()
-        result = state.stop_break(now=stopped_at)
-        if result is None:
-            # The watchdog can expire a break between the dashboard poll and
-            # this click. A harmless redirect is friendlier than a race-only
-            # error page and does not repeat any side effect.
-            log.info("break stop ignored - no active break")
-            return redirect("/")
+        with state.goal_access_lifecycle():
+            stopped_at = get_now()
+            result = state.stop_break(now=stopped_at)
+            if result is None:
+                # The watchdog can expire a break between the dashboard poll
+                # and click. A harmless redirect avoids duplicate side effects.
+                log.info("break stop ignored - no active break")
+                return redirect("/")
 
-        blocker.apply(state.effective_blocklist()) # close break-only sites now
-        event = {
-            "event": "break_stopped",
-            "purpose": result.purpose,
-            "kind": result.kind,
-            "requested_minutes": result.requested_minutes,
-            "elapsed_seconds": result.elapsed_seconds,
-            "charged_minutes": result.charged_minutes,
-            "refunded_minutes": result.refunded_minutes,
-        }
-        store.append_session_event(event)
-        store.save_state(state.to_dict())          # persist any social refund
+            event = {
+                "event": "break_stopped",
+                "purpose": result.purpose,
+                "kind": result.kind,
+                "requested_minutes": result.requested_minutes,
+                "elapsed_seconds": result.elapsed_seconds,
+                "charged_minutes": result.charged_minutes,
+                "refunded_minutes": result.refunded_minutes,
+            }
+            append_session_event(event, "break-stop")
+            save_state("break-stop")               # persist any social refund
+            session_context = state.context_summary(now=stopped_at)
+            queue_transition_feedback(
+                state,
+                "break_end_ack",
+                purpose=result.purpose,
+                charged_minutes=result.charged_minutes,
+                session_context=session_context,
+            )
+            enforcement_error = reconcile_or_503("break-stop")
+            if enforcement_error is not None:
+                return enforcement_error
+        goal_feedback.wake()
         log.info(
             "break stopped - purpose=%r kind=%s elapsed_seconds=%d "
             "charged_minutes=%d refunded_minutes=%d; enforcement restored",
@@ -159,36 +381,50 @@ def create_app(
             result.charged_minutes,
             result.refunded_minutes,
         )
-        try:
-            # Enforcement must stay restored if the optional model call fails.
-            text = messages.generate(
-                "break_end_ack",
-                purpose=result.purpose,
-                charged_minutes=result.charged_minutes,
-                session_context=state.context_summary(now=stopped_at),
-            )
-            speech.say(text)
-        except Exception:
-            log.exception("break-stop spoken feedback failed")
         return redirect("/")
 
     @app.post("/agentic")
     def toggle_agentic():
         # Mid-session toggle for agentic mode; re-apply blocking right away
         # (turning it OFF while the agent was busy must re-block instantly).
-        state.set_agentic(request.form.get("enabled") == "on")
-        blocker.apply(state.effective_blocklist())
-        store.append_session_event({"event": "agentic_toggle",
-                                    "enabled": state.agentic_mode})
+        with state.goal_access_lifecycle():
+            state.set_agentic(request.form.get("enabled") == "on")
+            append_session_event({
+                "event": "agentic_toggle",
+                "enabled": state.agentic_mode,
+            }, "agentic-toggle")
+            enforcement_error = reconcile_or_503("agentic-toggle")
+            if enforcement_error is not None:
+                return enforcement_error
+        goal_feedback.wake()
         return redirect("/")
 
     @app.post("/disable")
     def disable():
         # Requirement 6: exact confirmation phrase or a hard 403.
-        if not state.try_disable(request.form.get("phrase", ""), now=get_now()):
-            return "Wrong confirmation phrase - enforcement stays on.", 403
-        blocker.clear()                            # restore the hosts file
-        store.append_session_event({"event": "disabled"})
+        with state.goal_access_lifecycle():
+            disabled_at = get_now()
+            ok, ended_goal_access = state.try_disable_with_goal_access(
+                request.form.get("phrase", ""),
+                now=disabled_at,
+            )
+            if not ok:
+                return "Wrong confirmation phrase - enforcement stays on.", 403
+            if ended_goal_access is not None:
+                state.cancel_pending_goal_access_start(ended_goal_access)
+                # Disable already supplies explicit context, so cleanup is
+                # recorded without adding a second spoken transition.
+                append_session_event(goal_access_event(
+                    "goal_access_ended",
+                    ended_goal_access,
+                    ended_at=disabled_at,
+                    reason="disabled",
+                ), "disable-goal-access-end")
+            append_session_event({"event": "disabled"}, "disable")
+            enforcement_error = reconcile_or_503("disable")
+            if enforcement_error is not None:
+                return enforcement_error
+        goal_feedback.wake()
         return redirect("/")
 
     @app.get("/status")
