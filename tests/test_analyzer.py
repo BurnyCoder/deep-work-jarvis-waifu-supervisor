@@ -56,6 +56,32 @@ def test_verdict_requires_observed_description():
     assert "no chronological comparison is available yet" in SYSTEM_PROMPT.lower()
 
 
+def test_productive_reason_prompt_requests_creative_grounded_encouragement():
+    # Positive speech should celebrate the specific visible work without
+    # turning "Good job" into one repetitive canned prefix on every check.
+    prompt = SYSTEM_PROMPT.lower()
+    assert "when productive is true" in prompt
+    assert "in the spirit of 'good job'" in prompt
+    assert "affirmation tied to the observed work" in prompt
+    assert "vary the wording rather than using a fixed catchphrase" in prompt
+    # A first capture can support praise for present engagement, not a claim
+    # about progress across time that the model has not observed yet.
+    assert (
+        "for exactly one capture, affirm only current task-aligned engagement"
+    ) in prompt
+    assert (
+        "do not claim progress, improvement, advancement, or any change over time"
+    ) in prompt
+    # Later praise must remain evidence-grounded, and negative verdicts must
+    # never congratulate the user for work the monitor judged off-track.
+    assert "for two or more captures" in prompt
+    assert "praise progress only when visible changes or other capture evidence" in prompt
+    assert "praise the engagement or focus instead" in prompt
+    assert "when productive is false" in prompt
+    assert "include no praise or congratulations" in prompt
+    assert "naming the concrete evidence for the verdict" in prompt
+
+
 def make_analyzer(tmp_path, verdict=None, window_size=5,
                   reasoning_effort="xhigh"):
     verdict = verdict or ProductivityVerdict(productive=True, reason="deep in code",
