@@ -9,6 +9,7 @@
 import enum
 import math
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -58,6 +59,73 @@ class BreakStopResult:
     refunded_minutes: int                         # social reservation returned
 
 
+@dataclass(frozen=True)
+class GoalAccessInfo:
+    """Immutable description of one active goal-based website grant."""
+
+    # Frozen records cannot be accidentally edited after an event captures
+    # them: https://docs.python.org/3/library/dataclasses.html#frozen-instances
+    goal: str                                      # concrete reason for access
+    start_time: datetime                           # grant identity + start instant
+    end_time: datetime | None                      # None means session-end access
+    requested_minutes: int | None                  # original timed request or None
+    allowed_sites: tuple[str, ...]                 # normalized SITE_DOMAINS keys
+
+
+@dataclass(frozen=True)
+class GoalAccessFeedbackRequest:
+    """One immutable, exactly-once state-transition acknowledgment."""
+
+    kind: str                                      # MessageGenerator template key
+    context: tuple[tuple[str, object], ...]         # frozen keyword arguments
+    policy_revision: int                           # desired hosts-policy identity
+    grant: GoalAccessInfo | None = None             # goal-start cancellation ID
+    waits_for_goal_open: bool = False               # BREAK cannot publish start
+    accepts_later_policy: bool = False              # truthful after supersession
+
+
+def goal_access_event(
+    event_name: str,
+    access: GoalAccessInfo,
+    *,
+    ended_at: datetime | None = None,
+    reason: str | None = None,
+) -> dict:
+    """Build one canonical JSON-safe start/end record for any event producer."""
+
+    # ISO strings preserve full local date/time information while remaining
+    # directly JSON serializable:
+    # https://docs.python.org/3/library/datetime.html#datetime.datetime.isoformat
+    event = {
+        "event": event_name,
+        "goal": access.goal,
+        "allowed_sites": list(access.allowed_sites),
+        "allowed_site_labels": list(site_labels(access.allowed_sites)),
+        "started_at": access.start_time.isoformat(),
+        "expires_at": access.end_time.isoformat() if access.end_time else None,
+        "requested_minutes": access.requested_minutes,
+        "until_session_end": access.end_time is None,
+    }
+    if ended_at is not None:
+        event["ended_at"] = ended_at.isoformat()
+    if reason is not None:
+        event["reason"] = reason
+    return event
+
+
+@dataclass(frozen=True)
+class MonitoringContext:
+    """One atomic analyzer context used as the rolling-window cache key."""
+
+    session_start: datetime | None                 # current session identity
+    revision: int                                  # monotonic transition identity
+    topic: str                                     # task the user committed to
+    permanent_sites: tuple[str, ...]               # task/project site union
+    goal_access_start_time: datetime | None        # active grant identity
+    goal_access_goal: str | None                   # active temporary objective
+    goal_access_sites: tuple[str, ...]              # active temporary site union
+
+
 @dataclass
 class SessionState:
     # Behavior knobs are injected so tests construct states in one line.
@@ -75,6 +143,9 @@ class SessionState:
     # One-off website groups chosen for the current task. Unlike project
     # presets, these runtime choices deliberately do not survive a restart.
     task_allowed_sites: tuple[str, ...] = ()
+    # At most one temporary grant is active; completed grants are written as
+    # session events rather than retained in mutable/persisted state.
+    goal_access: GoalAccessInfo | None = None
     current_break: BreakInfo | None = None
     # date-iso -> minutes of social break reserved that day; keying by date
     # string makes the midnight rollover automatic and JSON-friendly.
@@ -96,6 +167,165 @@ class SessionState:
         # RLock (reentrant) so a locked method may call another locked method:
         # https://docs.python.org/3/library/threading.html#rlock-objects
         self._lock = threading.RLock()
+        # Lifecycle side effects (event -> reconciliation -> queued speech)
+        # span multiple collaborators. This separate reentrant coordinator lets
+        # Flask, expiry, and shutdown keep those ordered without exposing the
+        # state-data lock or holding it during model/TTS work.
+        self._goal_access_lifecycle_lock = threading.RLock()
+        # Slow optional model/TTS delivery is serialized independently so it
+        # can never delay a wall-clock expiry or hosts reconciliation.
+        self._goal_access_feedback_delivery_lock = threading.Lock()
+        # Dirty state is the retryable contract between mutations and the one
+        # serialized hosts-file reconciliation operation. The revision is an
+        # ABA-safe analyzer context identity: even restoring identical values
+        # after an intervening transition produces a different key.
+        self._enforcement_dirty = False
+        self._monitoring_revision = 0
+        self._shutting_down = False
+        self._pending_goal_access_feedback: list[
+            GoalAccessFeedbackRequest
+        ] = []
+        # Acknowledgments move here only after their claimed hosts policy was
+        # really applied. They remain separate from the delivery-ready queue
+        # until all earlier session JSONL records are durable.
+        self._enforced_goal_access_feedback: list[
+            GoalAccessFeedbackRequest
+        ] = []
+        self._ready_goal_access_feedback: list[
+            GoalAccessFeedbackRequest
+        ] = []
+
+    @contextmanager
+    def goal_access_lifecycle(self):
+        """Serialize one complete grant lifecycle flow across collaborators."""
+
+        # RLock is a context manager and permits nested same-thread use:
+        # https://docs.python.org/3/library/threading.html#rlock-objects
+        with self._goal_access_lifecycle_lock:
+            yield
+
+    def queue_goal_access_feedback(
+        self,
+        request: GoalAccessFeedbackRequest,
+    ) -> None:
+        """Retain ordered feedback until the desired hosts policy is applied."""
+
+        with self._lock:
+            self._pending_goal_access_feedback.append(request)
+
+    @property
+    def feedback_policy_revision(self) -> int:
+        """Return the locked policy identity captured by a queued message."""
+
+        with self._lock:
+            return self._monitoring_revision
+
+    def mark_goal_access_feedback_policy_applied(self) -> bool:
+        """Approve only acknowledgments supported by the applied policy.
+
+        The monotonic revision prevents a later successful reconciliation from
+        falsely publishing a superseded transition whose own hosts write
+        failed. Goal starts are the deliberate exception: an active grant may
+        wait through BREAK until a later ON policy really opens its sites.
+        Goal ends remain true after later policy transitions, so they may be
+        approved by a newer successful revision.
+        """
+
+        with self._lock:
+            if not self._pending_goal_access_feedback:
+                return False
+            enforced, pending = [], []
+            applied_revision = self._monitoring_revision
+            for request in self._pending_goal_access_feedback:
+                if request.waits_for_goal_open:
+                    if self.goal_access is not request.grant:
+                        # Defensive stale-request cleanup complements each
+                        # terminal transition's explicit cancellation call.
+                        continue
+                    if self.mode is Mode.ON:
+                        enforced.append(request)
+                    elif self.mode is Mode.BREAK:
+                        # BREAK applies a suspended policy, not the grant's
+                        # opening policy. Retain the start until ON resumes.
+                        pending.append(request)
+                    # OFF cannot legitimately retain an active grant; drop a
+                    # malformed stale start instead of claiming open access.
+                elif request.accepts_later_policy:
+                    if request.policy_revision <= applied_revision:
+                        enforced.append(request)
+                    else:
+                        pending.append(request)
+                elif request.policy_revision == applied_revision:
+                    enforced.append(request)
+                elif request.policy_revision > applied_revision:
+                    # Defensive support for callers that enqueue a future
+                    # revision before an earlier reconciliation completes.
+                    pending.append(request)
+                else:
+                    # A newer policy reached the backend without this exact
+                    # transition ever applying. Its permission-bearing speech
+                    # would now be false, so discard the superseded request.
+                    continue
+            self._enforced_goal_access_feedback.extend(enforced)
+            self._pending_goal_access_feedback = pending
+            return bool(enforced)
+
+    def release_goal_access_feedback(self) -> bool:
+        """Publish policy-approved requests after session events are durable."""
+
+        with self._lock:
+            if not self._enforced_goal_access_feedback:
+                return False
+            self._ready_goal_access_feedback.extend(
+                self._enforced_goal_access_feedback
+            )
+            self._enforced_goal_access_feedback = []
+            return True
+
+    def pop_ready_goal_access_feedback(
+        self,
+    ) -> GoalAccessFeedbackRequest | None:
+        """Claim the oldest enforcement-approved acknowledgment exactly once."""
+
+        with self._lock:
+            if not self._ready_goal_access_feedback:
+                return None
+            return self._ready_goal_access_feedback.pop(0)
+
+    @contextmanager
+    def goal_access_feedback_delivery(self):
+        """Serialize acknowledgments without serializing enforcement."""
+
+        with self._goal_access_feedback_delivery_lock:
+            yield
+
+    def cancel_pending_goal_access_start(
+        self,
+        access: GoalAccessInfo,
+    ) -> bool:
+        """Drop an unapplied start acknowledgment when that grant ends first."""
+
+        with self._lock:
+            previous_count = len(self._pending_goal_access_feedback)
+            self._pending_goal_access_feedback = [
+                pending
+                for pending in self._pending_goal_access_feedback
+                if not (
+                    pending.kind == "goal_access_start"
+                    # The exact active-record object survives stop, expiry,
+                    # replacement, Disable, and shutdown. Object identity
+                    # avoids collisions when tests or fast requests reuse the
+                    # same injected timestamp and otherwise identical values.
+                    and pending.grant is access
+                )
+            ]
+            return len(self._pending_goal_access_feedback) != previous_count
+
+    def _mark_policy_changed(self) -> None:
+        """Mark desired enforcement/monitoring changed while holding the lock."""
+
+        self._enforcement_dirty = True
+        self._monitoring_revision += 1
 
     # ---------- mode transitions ----------
 
@@ -107,7 +337,7 @@ class SessionState:
         allowed_sites: list[str] | tuple[str, ...] | None = None,
         project: str | None = None,
         agentic: bool = False,
-    ) -> None:
+    ) -> GoalAccessInfo | None:
         # Requirement 4: topic entered per session, history feeds the dropdown.
         # Validate every option before touching live state, so a forged form
         # value cannot leave a half-started session behind.
@@ -119,6 +349,11 @@ class SessionState:
             self.project_allowlists,
         )
         with self._lock:
+            if self._shutting_down:
+                raise RuntimeError("Application shutdown is already in progress.")
+            # Returning the cleared immutable record lets the route log the
+            # old grant as session-replaced without a separate unlocked read.
+            ended_goal_access = self.goal_access
             self.mode = Mode.ON
             self.session_start = now or datetime.now()
             self.session_end = None
@@ -128,6 +363,7 @@ class SessionState:
             self.last_verdict = None
             self.evaluation_history.clear()
             self.current_break = None
+            self.goal_access = None
             self.active_project = project_name
             self.task_allowed_sites = selected_sites
             self.agentic_mode = agentic
@@ -136,18 +372,136 @@ class SessionState:
             if topic in self.previous_topics:
                 self.previous_topics.remove(topic)
             self.previous_topics.insert(0, topic)
+            self._mark_policy_changed()
             self.productive_streak_min = 0
+            return ended_goal_access
+
+    def begin_shutdown(
+        self,
+        now: datetime | None = None,
+    ) -> GoalAccessInfo | None:
+        """Enter terminal OFF state and reject any later session replacement."""
+
+        with self._lock:
+            self._shutting_down = True
+            ended_goal_access = self.goal_access
+            self.mode = Mode.OFF
+            self.current_break = None
+            self.goal_access = None
+            self.session_end = now or datetime.now()
+            self._mark_policy_changed()
+            return ended_goal_access
 
     def try_disable(self, phrase: str, now: datetime | None = None) -> bool:
         # Requirement 6: only the EXACT phrase flips everything OFF —
         # comparison is deliberately case- and whitespace-sensitive friction.
+        ok, _ = self.try_disable_with_goal_access(phrase, now=now)
+        return ok
+
+    def try_disable_with_goal_access(
+        self,
+        phrase: str,
+        now: datetime | None = None,
+    ) -> tuple[bool, GoalAccessInfo | None]:
+        """Disable atomically and return any grant ended by that transition."""
+
         with self._lock:
             if phrase != CONFIRMATION_PHRASE:
-                return False
+                return False, None
+            ended_goal_access = self.goal_access
             self.mode = Mode.OFF
             self.current_break = None
+            self.goal_access = None
+            self._mark_policy_changed()
             self.session_end = now or datetime.now()
-            return True
+            return True, ended_goal_access
+
+    # ---------- goal-based temporary website access ----------
+
+    def start_goal_access(
+        self,
+        goal: str,
+        allowed_sites: list[str] | tuple[str, ...],
+        minutes: int | None,
+        now: datetime | None = None,
+    ) -> tuple[GoalAccessInfo | None, str]:
+        """Start one grant; sequential grants have no count or allowance cap."""
+
+        # Validate external input before constructing the record. Site keys use
+        # the same canonical policy order as permanent task access.
+        if not isinstance(goal, str) or not goal.strip():
+            return None, "A temporary-access goal is required."
+        try:
+            normalized_sites = normalize_site_keys(allowed_sites)
+        except (TypeError, ValueError) as exc:
+            return None, str(exc)
+        if not normalized_sites:
+            return None, "Choose at least one website group."
+        # bool is an int subclass, so reject it explicitly rather than turning
+        # True into an accidental one-minute grant:
+        # https://docs.python.org/3/library/functions.html#isinstance
+        if minutes is not None and (
+            isinstance(minutes, bool) or not isinstance(minutes, int)
+        ):
+            return None, "Duration must be a whole number of minutes."
+        if minutes is not None and not 1 <= minutes <= 240:
+            return None, "Duration must be between 1 and 240 minutes."
+
+        current = now or datetime.now()
+        with self._lock:
+            if self.mode is not Mode.ON:
+                return None, "Goal access can only start during an active session."
+            if self.goal_access is not None:
+                return None, "A goal-based access grant is already active."
+            access = GoalAccessInfo(
+                goal=goal.strip(),
+                start_time=current,
+                end_time=(
+                    current + timedelta(minutes=minutes)
+                    if minutes is not None
+                    else None
+                ),
+                requested_minutes=minutes,
+                allowed_sites=normalized_sites,
+            )
+            self.goal_access = access
+            self._mark_policy_changed()
+            return access, ""
+
+    def stop_goal_access(
+        self,
+        now: datetime | None = None,
+    ) -> GoalAccessInfo | None:
+        """End and return the current grant; stale repeated stops are no-ops."""
+
+        # ``now`` keeps every state transition clock-injectable and gives the
+        # route one uniform interface; timing fields remain the original grant.
+        _ = now
+        with self._lock:
+            ended = self.goal_access
+            self.goal_access = None
+            if ended is not None:
+                self._mark_policy_changed()
+            return ended
+
+    def end_goal_access_if_due(
+        self,
+        now: datetime | None = None,
+    ) -> GoalAccessInfo | None:
+        """Expire a timed grant in any mode and return its immutable record."""
+
+        current = now or datetime.now()
+        with self._lock:
+            active = self.goal_access
+            if (
+                active is None
+                or active.end_time is None
+                or current < active.end_time
+            ):
+                return None
+            self.goal_access = None
+            self._mark_policy_changed()
+            return active
 
     # ---------- breaks & allowance ----------
 
@@ -188,6 +542,7 @@ class SessionState:
                 allowed_apps=tuple(allowed_apps or ()),
             )
             self.mode = Mode.BREAK
+            self._mark_policy_changed()
             return True, ""
 
     def _restore_after_break(self) -> None:
@@ -196,6 +551,7 @@ class SessionState:
         self.current_break = None                  # remove temporary exceptions
         self.mode = Mode.ON                        # resume the active session
         self.productive_streak_min = 0             # restart post-break streak
+        self._mark_policy_changed()
 
     def end_break_if_due(self, now: datetime | None = None) -> bool:
         # Called by the enforcer watchdog every few seconds; True = restored.
@@ -262,9 +618,39 @@ class SessionState:
 
     # ---------- effective enforcement views ----------
 
+    @property
+    def enforcement_dirty(self) -> bool:
+        """Whether desired hosts policy still needs a successful backend write."""
+
+        with self._lock:
+            return self._enforcement_dirty
+
+    def reconcile_enforcement(self, blocker) -> bool:
+        """Atomically publish the latest desired hosts policy when it is dirty.
+
+        The state lock spans policy computation and the backend call, so an
+        older writer can never land after a newer transition. Exceptions
+        deliberately propagate while ``_enforcement_dirty`` remains true for
+        the scheduler's next retry.
+        """
+
+        with self._lock:
+            if not self._enforcement_dirty:
+                return False
+            if self.mode is Mode.OFF:
+                blocker.clear()
+            else:
+                blocker.apply(self.effective_blocklist())
+            self._enforcement_dirty = False
+            return True
+
     def _allowed_site_keys(self) -> set[str]:
         # Union of task/preset access and what the current break unlocks.
         allowed = set(self.work_allowed_sites)
+        # Goal access is deliberately absent during BREAK: its wall-clock timer
+        # continues, but grant-only sites remain blocked until focus resumes.
+        if self.mode is Mode.ON and self.goal_access:
+            allowed |= set(self.goal_access.allowed_sites)
         if self.mode is Mode.BREAK and self.current_break:
             allowed |= set(self.current_break.allowed_sites)
         return allowed
@@ -305,8 +691,11 @@ class SessionState:
         # Enable/disable agentic mode; busy flag resets so unblocking only
         # ever follows a fresh vision verdict, never a stale one.
         with self._lock:
+            changed = on != self.agentic_mode or self.agent_busy
             self.agentic_mode = on
             self.agent_busy = False
+            if changed:
+                self._mark_policy_changed()
 
     def set_agent_busy(self, busy: bool) -> bool:
         """Record the latest agent-activity verdict; True only on CHANGE so
@@ -314,6 +703,8 @@ class SessionState:
         with self._lock:
             changed = busy != self.agent_busy
             self.agent_busy = busy
+            if changed:
+                self._mark_policy_changed()
             return changed
 
     def set_project(self, name: str | None) -> None:
@@ -321,12 +712,19 @@ class SessionState:
         # social sites while enforcement stays ON for everything else.
         project_name = name.strip() if name else None
         with self._lock:
-            resolve_work_allowed_sites(
+            previous_sites = resolve_work_allowed_sites(
+                self.task_allowed_sites,
+                self.active_project,
+                self.project_allowlists,
+            )
+            next_sites = resolve_work_allowed_sites(
                 self.task_allowed_sites,
                 project_name,
                 self.project_allowlists,
             )
             self.active_project = project_name
+            if next_sites != previous_sites:
+                self._mark_policy_changed()
 
     # ---------- monitoring hooks ----------
 
@@ -338,7 +736,38 @@ class SessionState:
         # agent-busy waiting time is sanctioned too — no nudges while the
         # user's AI agent is still working. Normal monitoring resumes the
         # moment the agent goes idle.
+        with self._lock:
+            return self._monitoring_active_locked()
+
+    def _monitoring_active_locked(self) -> bool:
+        """Compute capture eligibility while the caller holds ``self._lock``."""
+
         return self.mode is Mode.ON and not (self.agentic_mode and self.agent_busy)
+
+    def monitoring_context(self) -> MonitoringContext:
+        """Return one locked context/key for a complete analyzer operation."""
+
+        with self._lock:
+            return self._monitoring_context_locked()
+
+    def _monitoring_context_locked(self) -> MonitoringContext:
+        """Build the immutable analyzer key while the caller holds the lock."""
+
+        permanent_sites = resolve_work_allowed_sites(
+            self.task_allowed_sites,
+            self.active_project,
+            self.project_allowlists,
+        )
+        grant = self.goal_access
+        return MonitoringContext(
+            revision=self._monitoring_revision,
+            session_start=self.session_start,
+            topic=self.topic,
+            permanent_sites=permanent_sites,
+            goal_access_start_time=(grant.start_time if grant else None),
+            goal_access_goal=(grant.goal if grant else None),
+            goal_access_sites=(grant.allowed_sites if grant else ()),
+        )
 
     @property
     def recent_verdicts(self) -> list[dict]:
@@ -382,6 +811,32 @@ class SessionState:
             self.last_verdict = dict(entry)
             return outcome
 
+    def record_verdict_if_context(
+        self,
+        expected_context: MonitoringContext,
+        productive: bool,
+        minutes: int,
+        observed: str = "",
+        reason: str = "",
+        now: datetime | None = None,
+    ) -> tuple[bool, str | None]:
+        """Record only if monitoring still uses the caller's exact revision."""
+
+        with self._lock:
+            if (
+                not self._monitoring_active_locked()
+                or self._monitoring_context_locked() != expected_context
+            ):
+                return False, None
+            outcome = self.record_verdict(
+                productive,
+                minutes,
+                observed=observed,
+                reason=reason,
+                now=now,
+            )
+            return True, outcome
+
     def context_summary(self, now: datetime | None = None) -> str:
         """One multi-line snapshot of the whole session — handed to every TTS
         message prompt so spoken feedback can reference real specifics."""
@@ -391,6 +846,7 @@ class SessionState:
                 if self.session_start else 0
             lines = [
                 f"topic: {self.topic or '(none)'}",
+
                 f"minutes into session: {minutes_in}",
                 f"productive streak: {self.productive_streak_min} min",
                 f"social allowance left today: {self.social_minutes_remaining(now)} min",
@@ -402,6 +858,14 @@ class SessionState:
                     "work-required websites allowed: "
                     + ", ".join(self.work_allowed_sites)
                 )
+            if self.goal_access:
+                lines.append(f"temporary access goal: {self.goal_access.goal}")
+                lines.append(
+                    "temporary website groups selected: "
+                    + ", ".join(self.goal_access.allowed_sites)
+                )
+                if self.mode is Mode.BREAK:
+                    lines.append("temporary goal access: suspended during break")
             if self.agentic_mode:
                 lines.append("agentic mode: on, AI agent currently "
                              + ("working" if self.agent_busy else "idle"))
@@ -445,6 +909,7 @@ class SessionState:
                 self.effective_kill_processes() if enforcement_on else ()
             )
             br = self.current_break
+            grant = self.goal_access
             work_sites = self.work_allowed_sites
             break_payload = (
                 {
@@ -459,6 +924,27 @@ class SessionState:
                     "allowed_apps": list(br.allowed_apps),
                 }
                 if br
+                else None
+            )
+            goal_access_payload = (
+                {
+                    "goal": grant.goal,
+                    "allowed_sites": list(grant.allowed_sites),
+                    "allowed_site_labels": list(site_labels(grant.allowed_sites)),
+                    "started_at": grant.start_time.isoformat(),
+                    "expires_at": (
+                        grant.end_time.isoformat() if grant.end_time else None
+                    ),
+                    "requested_minutes": grant.requested_minutes,
+                    "remaining_s": (
+                        max(0, int((grant.end_time - current).total_seconds()))
+                        if grant.end_time
+                        else None
+                    ),
+                    "until_session_end": grant.end_time is None,
+                    "suspended": self.mode is Mode.BREAK,
+                }
+                if grant
                 else None
             )
             # Reversed copies put the newest item first without exposing the
@@ -488,11 +974,13 @@ class SessionState:
                 "agentic_mode": self.agentic_mode,
                 "agent_busy": self.agent_busy,
                 "break": break_payload,
+                "goal_access": goal_access_payload,
                 "enforcement": {
                     "hosts_active": bool(blocked_domains),
                     "blocked_domain_count": len(blocked_domains),
                     "app_killer_active": bool(target_processes),
                     "target_process_count": len(target_processes),
+                    "reconciliation_pending": self._enforcement_dirty,
                 },
             }
 

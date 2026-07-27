@@ -22,6 +22,7 @@
   let requestInFlight = false;
   let renderedHistorySignature = "";
   let latestAnnouncedVerdictTs = null;
+  let hadActiveGoalAccess = false;
 
   const byId = (id) => document.getElementById(id);
 
@@ -185,12 +186,103 @@
     const enforcement = status.enforcement || {};
     setText(
       "blocked-domains",
-      enforcement.hosts_active ? String(enforcement.blocked_domain_count || 0) : "Off",
+      enforcement.reconciliation_pending
+        ? "Pending"
+        : enforcement.hosts_active
+          ? String(enforcement.blocked_domain_count || 0)
+          : "Off",
     );
     setText(
       "watched-processes",
       enforcement.app_killer_active ? String(enforcement.target_process_count || 0) : "Off",
     );
+  }
+
+  function syncGoalAccessDuration() {
+    const mode = byId("goal-access-duration-mode");
+    const minutes = byId("goal-access-minutes");
+    const field = byId("goal-access-minutes-field");
+    if (!mode || !minutes || !field) {
+      return;
+    }
+    const isTimed = mode.value === "timed";
+    // Disabled controls are omitted from form submission, matching the server's
+    // `None` representation for access that lasts until the session ends:
+    // https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes/disabled
+    minutes.disabled = !isTimed;
+    minutes.required = isTimed;
+    field.dataset.durationDisabled = String(!isTimed);
+  }
+
+  function renderGoalAccess(status) {
+    const access = status.goal_access;
+    const form = byId("goal-access-form");
+    const activePanel = byId("goal-access-active");
+    const submit = byId("goal-access-submit");
+    const stateBadge = byId("goal-access-state");
+    const reconciliationPending = Boolean(
+      status.enforcement?.reconciliation_pending,
+    );
+
+    if (form) {
+      form.classList.toggle("is-hidden", Boolean(access));
+    }
+    if (activePanel) {
+      activePanel.classList.toggle("is-hidden", !access);
+    }
+    if (submit) {
+      submit.disabled = status.mode !== "on" || Boolean(access);
+    }
+
+    if (!access) {
+      if (hadActiveGoalAccess && form) {
+        // Automatic expiry happens without navigation. Resetting only on the
+        // active-to-idle transition makes the same card ready for another grant.
+        form.reset();
+        syncGoalAccessDuration();
+      }
+      hadActiveGoalAccess = false;
+      if (stateBadge) {
+        stateBadge.dataset.state = reconciliationPending ? "pending" : "idle";
+      }
+      setText(
+        "goal-access-state",
+        reconciliationPending ? "Policy update pending" : "Ready",
+      );
+      setText(
+        "goal-access-form-state",
+        reconciliationPending
+          ? "Website enforcement is retrying the latest policy automatically."
+          : status.mode === "on"
+          ? "Ready for a goal-based access grant."
+          : status.mode === "break"
+            ? "Finish the current break before starting another grant."
+            : "Start a focused session before requesting temporary access.",
+      );
+      return;
+    }
+
+    hadActiveGoalAccess = true;
+    const labels = Array.isArray(access.allowed_site_labels)
+      ? access.allowed_site_labels
+      : (access.allowed_sites || []).map(titleCase);
+    if (stateBadge) {
+      stateBadge.dataset.state = reconciliationPending
+        ? "pending"
+        : access.suspended
+          ? "suspended"
+          : "active";
+    }
+    setText(
+      "goal-access-state",
+      reconciliationPending
+        ? "Policy update pending"
+        : access.suspended
+          ? "Suspended for break"
+          : "Active",
+    );
+    setText("goal-access-current-goal", access.goal || "Temporary website task");
+    setText("goal-access-sites", labels.length ? labels.join(", ") : "None");
   }
 
   function createVerdictItem(item, index, openEvidence) {
@@ -360,6 +452,7 @@
     renderHeader(status);
     renderMetrics(status);
     renderConditions(status);
+    renderGoalAccess(status);
     renderHistory(status.evaluation_history);
     renderOperations(status.runtime);
     updateLiveClocks();
@@ -421,6 +514,19 @@
         "break-detail",
         `${titleCase(latestStatus.break.kind)} · ${formatCountdown(remaining)} remaining${allowanceText}`,
       );
+    }
+
+    const goalAccess = latestStatus.goal_access;
+    if (goalAccess) {
+      const suspension = goalAccess.suspended
+        ? " · grant permission suspended during break; timer continues; other permissions may still keep a site open"
+        : "";
+      const timing = goalAccess.until_session_end
+        ? `Until this focused session ends${suspension}`
+        : `${formatCountdown(
+            Math.max(0, Number(goalAccess.remaining_s) - delta),
+          )} remaining${suspension}`;
+      setText("goal-access-timing", timing);
     }
 
     Object.entries(latestStatus.runtime?.loops || {}).forEach(([name, loop]) => {
@@ -488,6 +594,11 @@
     setConnection("reconnecting", "Offline");
   });
 
+  const goalAccessDurationMode = byId("goal-access-duration-mode");
+  if (goalAccessDurationMode) {
+    goalAccessDurationMode.addEventListener("change", syncGoalAccessDuration);
+  }
+  syncGoalAccessDuration();
   window.setInterval(updateLiveClocks, CLOCK_INTERVAL_MS);
   fetchStatus();
 })();

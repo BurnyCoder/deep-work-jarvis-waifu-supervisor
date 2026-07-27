@@ -2,15 +2,17 @@
 # tests are deterministic (no sleeping); one test exercises real threads with
 # tiny intervals to prove start/stop works.
 
+import json
 import threading
 import time
 from datetime import datetime, timedelta
 
+import pytest
 from PIL import Image
 
 from deepwork.monitoring.analyzer import ProductivityVerdict
 from deepwork.scheduler import Scheduler
-from deepwork.state import Mode, SessionState
+from deepwork.state import Mode, SessionState, goal_access_event
 from deepwork.storage import ResultsStore
 
 T0 = datetime(2026, 7, 7, 9, 0, 0)
@@ -35,8 +37,23 @@ class FakeAnalyzer:
         self.captures = []
         self.resets = 0
 
-    def add_capture(self, path, topic, allowed_sites=()):
-        self.captures.append((path, topic, tuple(allowed_sites)))
+    def add_capture(
+        self,
+        path,
+        topic,
+        allowed_sites=(),
+        goal_access_goal=None,
+        goal_access_sites=(),
+    ):
+        self.captures.append(
+            (
+                path,
+                topic,
+                tuple(allowed_sites),
+                goal_access_goal,
+                tuple(goal_access_sites),
+            )
+        )
         return self.verdict
 
     def reset(self):
@@ -113,6 +130,125 @@ def test_enforcer_tick_restores_after_break_expiry(tmp_path):
     assert state.mode is Mode.ON                   # watchdog restored ON
     # Hosts re-applied with the FULL blocklist (allowances gone).
     assert sched.blocker.applied and "reddit.com" in sched.blocker.applied[-1]
+
+
+def test_enforcer_expires_goal_during_break_and_applies_hosts_once(tmp_path):
+    """Coincident break/grant expiry performs one final hosts-file rewrite."""
+
+    sched, state, _ = make_scheduler(tmp_path)
+    events = []
+    sched.store.append_session_event = events.append
+    state.start_session("research", now=T0)
+    state.start_goal_access("fetch quote", ["twitter"], 10, now=T0)
+    state.start_break("walk", 10, "away", now=T0)
+
+    result = sched._enforcer_tick(now=T0 + timedelta(minutes=10))
+
+    assert state.mode is Mode.ON
+    assert state.goal_access is None
+    assert len(sched.blocker.applied) == 1
+    assert "x.com" in sched.blocker.applied[0]
+    assert result["break_ended"] is True
+    assert result["goal_access_ended"] is True
+    assert events == [
+        {"event": "break_ended"},
+        {
+            "event": "goal_access_ended",
+            "reason": "expired",
+            "goal": "fetch quote",
+            "allowed_sites": ["twitter"],
+            "allowed_site_labels": ["X / Twitter"],
+            "started_at": T0.isoformat(),
+            "expires_at": (T0 + timedelta(minutes=10)).isoformat(),
+            "requested_minutes": 10,
+            "until_session_end": False,
+            "ended_at": (T0 + timedelta(minutes=10)).isoformat(),
+        },
+    ]
+    assert sched.messages.calls == [
+        (
+            "goal_access_end",
+            {
+                "goal": "fetch quote",
+                "site_labels": ["X / Twitter"],
+                "end_reason": "expired",
+                "session_context": state.context_summary(
+                    now=T0 + timedelta(minutes=10)
+                ),
+            },
+        )
+    ]
+    assert sched.speech.spoken == ["<goal_access_end>"]
+
+
+@pytest.mark.parametrize("failure_point", ["message", "speech"])
+def test_goal_expiry_survives_optional_feedback_failure(
+    tmp_path,
+    failure_point,
+):
+    """State, event, and enforcement stay committed when message/TTS fails."""
+
+    sched, state, _ = make_scheduler(tmp_path)
+    events = []
+    sched.store.append_session_event = events.append
+    state.start_session("research", now=T0)
+    state.start_goal_access("fetch quote", ["twitter"], 1, now=T0)
+
+    def fail_generate(*args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+    def fail_say(*args, **kwargs):
+        raise RuntimeError("audio unavailable")
+
+    if failure_point == "message":
+        sched.messages.generate = fail_generate
+    else:
+        sched.speech.say = fail_say
+    result = sched._enforcer_tick(now=T0 + timedelta(minutes=1))
+
+    assert result["goal_access_ended"] is True
+    assert state.goal_access is None
+    assert len(sched.blocker.applied) == 1
+    assert events[-1]["event"] == "goal_access_ended"
+    assert sched.speech.spoken == []
+
+
+def test_enforcer_samples_wall_clock_after_waiting_for_lifecycle_lock(tmp_path):
+    """Lock contention cannot defer an expiry by one complete enforcer cycle."""
+
+    clock = {"now": T0 + timedelta(seconds=30)}
+    state = SessionState()
+    state.start_session("research", now=T0)
+    state.start_goal_access("fetch quote", ["twitter"], 1, now=T0)
+    kill_completed = threading.Event()
+    sched = Scheduler(
+        state=state,
+        blocker=FakeBlocker(),
+        store=ResultsStore(tmp_path),
+        analyzer=FakeAnalyzer(None),
+        messages=FakeMessages(),
+        speech=FakeSpeech(),
+        capture_interval_s=300,
+        kill_interval_s=3,
+        kill_fn=lambda names: kill_completed.set() or [],
+        now_fn=lambda: clock["now"],
+    )
+    result = {}
+
+    def enforce():
+        result.update(sched._enforcer_tick())
+
+    with state.goal_access_lifecycle():
+        thread = threading.Thread(target=enforce)
+        thread.start()
+        assert kill_completed.wait(timeout=1)
+        clock["now"] = T0 + timedelta(minutes=1)
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert result["goal_access_ended"] is True
+    assert state.goal_access is None
+    assert "x.com" in sched.blocker.applied[-1]
 
 
 def test_monitor_tick_skips_when_monitoring_inactive(tmp_path):
@@ -207,6 +343,53 @@ def test_progress_window_resets_only_for_a_new_session(tmp_path):
     assert sched.analyzer.resets == 2              # changed session → fresh window
 
 
+def test_progress_window_resets_for_every_goal_access_context_change(tmp_path):
+    """Each goal cycle gets an independent rolling vision history."""
+
+    verdict = ProductivityVerdict(
+        productive=True,
+        reason="progress",
+        observed="research draft changed",
+    )
+    sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
+    state.start_session("thesis", now=T0, allowed_sites=["linkedin"])
+    sched._monitor_tick()
+    assert sched.analyzer.resets == 1
+
+    state.start_goal_access(
+        "fetch quote",
+        ["twitter"],
+        10,
+        now=T0 + timedelta(minutes=1),
+    )
+    sched._monitor_tick()
+    assert sched.analyzer.resets == 2
+    assert sched.analyzer.captures[-1][2:] == (
+        ("linkedin",),
+        "fetch quote",
+        ("twitter",),
+    )
+
+    state.stop_goal_access(now=T0 + timedelta(minutes=2))
+    sched._monitor_tick()
+    assert sched.analyzer.resets == 3
+    assert sched.analyzer.captures[-1][2:] == (("linkedin",), None, ())
+
+    state.start_goal_access(
+        "verify response",
+        ["reddit"],
+        None,
+        now=T0 + timedelta(minutes=3),
+    )
+    sched._monitor_tick()
+    assert sched.analyzer.resets == 4
+    assert sched.analyzer.captures[-1][2:] == (
+        ("linkedin",),
+        "verify response",
+        ("reddit",),
+    )
+
+
 def test_agent_watch_unblocks_then_reblocks_on_transitions(tmp_path):
     checker = FakeAgentChecker([True, True, False])
     sched, state, _ = make_scheduler(tmp_path, agent_checker=checker)
@@ -224,6 +407,42 @@ def test_agent_watch_unblocks_then_reblocks_on_transitions(tmp_path):
     sched._agent_watch_tick()
     assert "reddit.com" in sched.blocker.applied[-1]
     assert sched.speech.spoken == ["<agent_running>", "<agent_done>"]
+
+
+def test_agent_watch_drops_superseded_unapplied_access_feedback(tmp_path):
+    """A failed opening policy must never be announced after reblocking."""
+
+    class FailAgentOpeningPolicy(FakeBlocker):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        def apply(self, domains):
+            self.attempts += 1
+            if self.attempts == 2:
+                raise OSError("hosts file busy")
+            super().apply(domains)
+
+    checker = FakeAgentChecker([True, False])
+    sched, state, _ = make_scheduler(tmp_path, agent_checker=checker)
+    blocker = FailAgentOpeningPolicy()
+    sched.blocker = blocker
+    state.start_session("agentic coding", now=T0, agentic=True)
+    state.reconcile_enforcement(blocker)            # initial blocked policy
+
+    failed_open = sched._agent_watch_tick()
+
+    assert failed_open["status"] == "enforcement_failed"
+    assert state.agent_busy is True
+    assert sched.speech.spoken == []
+
+    recovered_closed = sched._agent_watch_tick()
+
+    assert recovered_closed["status"] == "idle"
+    assert state.agent_busy is False
+    assert "reddit.com" in blocker.applied[-1]
+    assert sched.speech.spoken == ["<agent_done>"]
+    assert [kind for kind, _ in sched.messages.calls] == ["agent_done"]
 
 
 def test_agent_watch_restores_task_specific_blocklist(tmp_path):
@@ -398,3 +617,227 @@ def test_threads_start_and_stop_cleanly(tmp_path):
     time.sleep(0.15)                               # let loops tick at least once
     sched.stop()                                   # must return promptly
     assert not any(t.is_alive() for t in sched.threads)
+
+
+def test_enforcer_retries_dirty_policy_and_publishes_expiry_once(tmp_path):
+    """A transient hosts failure delays, but never loses or duplicates, expiry."""
+
+    class FailFirstApply(FakeBlocker):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        def apply(self, domains):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OSError("hosts file busy")
+            super().apply(domains)
+
+    sched, state, _ = make_scheduler(tmp_path)
+    sched.blocker = FailFirstApply()
+    events = []
+    sched.store.append_session_event = events.append
+    state.start_session("research", now=T0)
+    access, _ = state.start_goal_access(
+        "fetch quote",
+        ["twitter"],
+        1,
+        now=T0,
+    )
+    assert access is not None
+
+    failed = sched._enforcer_tick(now=T0 + timedelta(minutes=1))
+
+    assert failed["status"] == "enforcement_failed"
+    assert failed["goal_access_ended"] is True
+    assert state.goal_access is None
+    assert state.enforcement_dirty
+    assert len(events) == 1
+    assert events[0]["event"] == "goal_access_ended"
+    assert events[0]["reason"] == "expired"
+    assert sched.speech.spoken == []
+
+    replacement, reason = state.start_goal_access(
+        "new grant after failure",
+        ["reddit"],
+        10,
+        now=T0 + timedelta(minutes=1, microseconds=1),
+    )
+    assert replacement is not None and reason == ""
+
+    recovered = sched._enforcer_tick(now=T0 + timedelta(minutes=1, seconds=1))
+
+    assert recovered["status"] == "active"
+    assert not state.enforcement_dirty
+    assert sched.blocker.attempts == 2
+    assert len(events) == 1
+    assert events[0]["event"] == "goal_access_ended"
+    assert events[0]["reason"] == "expired"
+    assert sched.speech.spoken == ["<goal_access_end>"]
+    expiry_context = sched.messages.calls[-1][1]["session_context"]
+    assert "new grant after failure" not in expiry_context
+
+    sched._enforcer_tick(now=T0 + timedelta(minutes=1, seconds=2))
+    assert sched.blocker.attempts == 2
+    assert len(events) == 1
+    assert sched.speech.spoken == ["<goal_access_end>"]
+
+
+def test_expiry_event_failure_still_reblocks_and_retries_complete_cycle(
+    tmp_path,
+    monkeypatch,
+):
+    """A transient JSONL failure cannot leave expired website access open."""
+
+    store = ResultsStore(tmp_path)
+    state = SessionState()
+    blocker = FakeBlocker()
+    messages = FakeMessages()
+    speech = FakeSpeech()
+    sched = Scheduler(
+        state=state,
+        blocker=blocker,
+        store=store,
+        analyzer=FakeAnalyzer(None),
+        messages=messages,
+        speech=speech,
+        capture_interval_s=300,
+        kill_interval_s=3,
+        kill_fn=lambda targets: [],
+    )
+    state.start_session("research", now=T0)
+    access, reason = state.start_goal_access(
+        "fetch quote",
+        ["twitter"],
+        1,
+        now=T0,
+    )
+    assert access is not None and reason == ""
+    store.append_session_event(goal_access_event("goal_access_started", access))
+    state.reconcile_enforcement(blocker)
+    assert "x.com" not in blocker.applied[-1]
+
+    original_flush = store._flush_session_events_locked
+    failures = {"remaining": 2}
+
+    def fail_twice():
+        if store._pending_session_lines and failures["remaining"]:
+            failures["remaining"] -= 1
+            raise OSError("session disk temporarily unavailable")
+        return original_flush()
+
+    monkeypatch.setattr(store, "_flush_session_events_locked", fail_twice)
+
+    expired = sched._enforcer_tick(now=T0 + timedelta(minutes=1))
+
+    assert expired["goal_access_ended"] is True
+    assert state.goal_access is None
+    assert state.enforcement_dirty is False
+    assert "x.com" in blocker.applied[-1]
+    assert store.session_events_pending is True
+    assert speech.spoken == []
+
+    retry = sched._enforcer_tick(now=T0 + timedelta(minutes=1, seconds=3))
+
+    assert retry["goal_access_ended"] is False
+    assert store.session_events_pending is False
+    event_file = next((tmp_path / "sessions").glob("*.jsonl"))
+    events = [
+        json.loads(line)
+        for line in event_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event"] for event in events] == [
+        "goal_access_started",
+        "goal_access_ended",
+    ]
+    assert speech.spoken == ["<goal_access_end>"]
+
+
+def test_enforcer_does_not_rewrite_hosts_when_policy_is_clean(tmp_path):
+    """Periodic retries invoke the backend only while state reports dirty."""
+
+    sched, state, _ = make_scheduler(tmp_path)
+    state.start_session("write", now=T0)
+
+    sched._enforcer_tick(now=T0)
+    sched._enforcer_tick(now=T0 + timedelta(seconds=1))
+
+    assert len(sched.blocker.applied) == 1
+    assert not state.enforcement_dirty
+
+
+def test_monitor_discards_capture_when_context_changes_during_capture(tmp_path):
+    """Pixels captured under an old grant context never reach the analyzer."""
+
+    verdict = ProductivityVerdict(
+        productive=True,
+        reason="stale progress",
+        observed="old screen",
+    )
+    sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
+    events = []
+    sched.store.append_session_event = events.append
+    state.start_session("write", now=T0)
+
+    def capture_then_transition():
+        access, reason = state.start_goal_access(
+            "new research",
+            ["twitter"],
+            10,
+            now=T0 + timedelta(minutes=1),
+        )
+        assert access is not None and reason == ""
+        return Image.new("RGB", (8, 8), "green")
+
+    sched.capture_fn = capture_then_transition
+
+    assert sched._monitor_tick() == {"status": "context_changed"}
+    assert sched.analyzer.captures == []
+    assert state.last_verdict is None
+    assert events == []
+    assert sched.speech.spoken == []
+
+
+def test_monitor_atomically_rejects_transition_during_analysis(tmp_path):
+    """Model work that finishes after a revision change has no side effects."""
+
+    verdict = ProductivityVerdict(
+        productive=False,
+        reason="stale distraction",
+        observed="old screen",
+    )
+    sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
+    events = []
+    sched.store.append_session_event = events.append
+    state.start_session("write", now=T0)
+    original_add_capture = sched.analyzer.add_capture
+    transitioned = False
+
+    def analyze_then_transition(*args, **kwargs):
+        nonlocal transitioned
+        result = original_add_capture(*args, **kwargs)
+        if not transitioned:
+            transitioned = True
+            access, reason = state.start_goal_access(
+                "new research",
+                ["twitter"],
+                10,
+                now=T0 + timedelta(minutes=1),
+            )
+            assert access is not None and reason == ""
+        return result
+
+    sched.analyzer.add_capture = analyze_then_transition
+
+    assert sched._monitor_tick() == {"status": "context_changed"}
+    assert state.last_verdict is None
+    assert events == []
+    assert sched.speech.spoken == []
+    assert sched.analyzer.resets == 1
+
+    result = sched._monitor_tick()
+
+    assert result["status"] == "unproductive"
+    assert sched.analyzer.resets == 2
+    assert len(events) == 1 and events[0]["event"] == "verdict"
+    assert sched.speech.spoken == ["<nudge>"]

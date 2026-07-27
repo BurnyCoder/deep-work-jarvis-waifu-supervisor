@@ -51,10 +51,10 @@ Implementation details live under `deepwork/`:
 | `config.py` | Frozen `.env`-derived `Config`; hardcoded site/app policy tables |
 | `site_access.py` | Site labels; strict task/preset key normalization; `projects.json` loading and union |
 | `logging_setup.py` | Timestamped UTF-8 file and terminal root logging |
-| `state.py` | Locked modes, task access, breaks, allowance, streak, verdict history, agent state, status snapshots |
-| `storage.py` | Capture JPEGs, LLM exchange JSON, session JSONL, and persisted allowance/topic state |
+| `state.py` | Locked modes, terminal shutdown, grant lifecycle/feedback coordination, versioned monitoring context, retryable policy reconciliation, breaks, allowance, verdicts, and status |
+| `storage.py` | Capture JPEGs, LLM exchange JSON, retryable ordered session JSONL, and persisted allowance/topic state |
 | `runtime_status.py` | Locked JSON-safe fixed-delay loop cadence, phase, result, countdown, and error state |
-| `scheduler.py` | Enforcer, productivity-monitor, and agent-watch daemon loops |
+| `scheduler.py` | Enforcer (including access expiry and dirty-policy retry), context-safe productivity monitor, and agent-watch loops |
 | `blocking/admin.py` | Windows admin test and `runas` self-relaunch |
 | `blocking/hosts_blocker.py` | Marker-fenced hosts replacement/removal and DNS-cache flush; dry-run adapter |
 | `blocking/app_killer.py` | Case-insensitive exact process-name termination with psutil |
@@ -62,23 +62,27 @@ Implementation details live under `deepwork/`:
 | `monitoring/webcam_capture.py` | Optional DirectShow webcam frame; failure returns `None` |
 | `monitoring/stitcher.py` | Labeled vertical monitor/webcam composite |
 | `monitoring/analyzer.py` | Rolling 1..N structured productivity verdict and single-capture agent-activity verdict |
-| `feedback/messages.py` | Context-grounded good-luck, nudge, milestone-praise, break, and agent-transition text |
+| `feedback/goal_access.py` | Policy-revision-gated transition acknowledgments and independent FIFO model/TTS worker |
+| `feedback/messages.py` | Context-grounded good-luck, nudge, milestone-praise, break, goal-access, and agent-transition text |
 | `feedback/tts.py` | OpenAI WAV or pyttsx3 speaker behind one FIFO worker |
-| `webui/app.py` | Flask factory and state-changing routes |
+| `webui/app.py` | Flask factory and state-changing session, access, break, agent, and disable routes |
 | `webui/status.py` | Composition of state and scheduler snapshots |
 | `webui/templates/`, `static/` | Status-first dashboard and safe non-overlapping polling |
 
 ## Behavioral invariants
 
-- A new session replaces one-off task sites and resets the latest verdict,
-  timeline, break, streak, and agent state. Its next monitor tick resets the
-  analyzer window.
+- A new session replaces one-off task sites, ends any temporary goal-access
+  grant, and resets the latest verdict, timeline, break, streak, and agent
+  state. Its next monitor tick resets the analyzer window.
+- Registered normal shutdown ends and records an active grant before serialized
+  hosts cleanup; hard termination can skip both cleanup and the end event.
 - OFF and BREAK preserve the in-memory timeline; restart does not. Only
-  allowance usage and topic history persist.
-- Every successful productivity capture is evaluated immediately against the
-  available rolling window. With five captures at a five-minute sampling
-  interval, oldest-to-newest visual span is 20 minutes; the first full window
-  completes around the fifth tick.
+  allowance usage and topic history persist. Live goal-access grants never do.
+- A successful productivity capture is evaluated immediately against the
+  available rolling window only if its versioned monitoring context still
+  matches. With five captures at a five-minute sampling interval,
+  oldest-to-newest visual span is 20 minutes; the first full window completes
+  around the fifth uninterrupted tick.
 - The analyzer prompt requires every productive reason to integrate a brief
   affirmation tied to concrete task-aligned evidence and asks the model to vary
   the wording naturally. A single capture may praise current engagement but
@@ -92,11 +96,47 @@ Implementation details live under `deepwork/`:
 - Productivity and agent-watch ticks share one capture lock. Hold it only
   around the injected capture callable; persistence, model calls, state
   mutation, and speech must remain outside it.
+- The productivity analyzer gets an immutable, revisioned context snapshot.
+  Every grant start/end changes that identity and resets the rolling window
+  before the next capture. Recheck after capture and atomically compare again
+  when recording: a transition during capture/model work must produce
+  `context_changed` with no verdict state, event, or speech.
 - Task and preset site keys are strictly validated and fail before state or
   hosts mutation. The break route trusts HTML duration/type constraints and
   does not strictly validate CSV keys; forged negative social minutes corrupt
   allowance accounting, while unknown keys have no policy effect.
 - Task-required sites stay monitored, spend no allowance, and never spare apps.
+- One temporary goal-access grant may be active at a time, but a session may
+  contain unlimited sequential grants. Each requires a non-empty goal, at
+  least one strictly validated site group, and either 1..240 wall-clock minutes
+  or session-end duration. It stays in ON mode, spends no social allowance,
+  does not itself pause monitoring, and never spares desktop apps.
+- BREAK preserves but suspends goal access: grant-only sites re-block, its
+  timer keeps running, and it resumes only if still active when BREAK ends.
+  Permanent task, break, or agentic policy can still permit an overlapping
+  site. Timed expiry is detected by the fixed-delay enforcer and may occur
+  during BREAK.
+- Serialize every desired hosts policy through the state-owned reconciliation
+  lock. A backend exception leaves the policy dirty, exposes
+  `/status.enforcement.reconciliation_pending`, and is retried by the enforcer;
+  never let an older writer overwrite a newer transition.
+- Complete goal-access events and successful enforcement precede optional
+  transition message/TTS work. Start, manual stop, and expiry each enqueue one
+  immutable acknowledgment context. Successful serialized reconciliation moves
+  only requests supported by that exact policy revision toward the ready FIFO;
+  a superseded failed permission transition is dropped rather than announced.
+  A separate daemon worker delivers approved requests without holding the
+  lifecycle lock. Cancel an unapplied start if its
+  grant ends, expires, is replaced, is disabled, or shuts down before opening
+  reconciliation succeeds. Model/speech failure never rolls state back or
+  retries a claimed request. Hard termination can lose in-memory speech, but
+  canonical lifecycle events are attempted and retained before reconciliation.
+- Session-event appends are serialized. A transient JSONL failure retains the
+  complete timestamped line for enforcer retry, never prevents immediate hosts
+  reconciliation, and rolls partial/close-time writes back to the previous line
+  boundary before retry. Matching transition speech waits until earlier events
+  are durable. All session, break, agent, and goal transition speech shares the
+  FIFO worker so lifecycle acknowledgments cannot overtake each other.
 - Positive social-break minutes are reserved in full when the break starts.
   Manual stop charges each started minute and refunds the unelapsed reservation
   to the break's starting local date; natural expiry consumes the full amount.
@@ -113,6 +153,9 @@ Implementation details live under `deepwork/`:
 
 - Log every complete textual prompt and semantic model output to both terminal
   and the timestamped run log; never slice or abbreviate them.
+- Temporary access goals and selected sites are complete prompt/event data;
+  log and persist them without truncation and document that model evaluation
+  uploads them with the capture context.
 - Persist each complete SDK response under `results/llm/`. For vision requests,
   persist full text plus capture-file references instead of duplicating base64
   image bytes.

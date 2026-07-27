@@ -3,6 +3,7 @@
 
 import json
 
+import pytest
 from PIL import Image
 
 from deepwork.storage import ResultsStore
@@ -57,6 +58,46 @@ def test_session_events_append_as_jsonl(tmp_path):
     assert len(lines) == 2                         # one JSON object per line
     assert json.loads(lines[0])["topic"] == "thesis"
     assert "ts" in json.loads(lines[0])            # events are timestamped
+
+
+@pytest.mark.parametrize("failure_mode", ["partial", "after_full_write"])
+def test_session_event_line_survives_transient_append_failure(
+    tmp_path,
+    monkeypatch,
+    failure_mode,
+):
+    """Partial and close-like failures roll back before one exact retry."""
+
+    store = ResultsStore(tmp_path)
+    original_append = store._append_session_payload
+    failures = {"remaining": 1}
+
+    def fail_once(path, payload):
+        if failures["remaining"]:
+            failures["remaining"] -= 1
+            if failure_mode == "partial":
+                with path.open("ab") as handle:
+                    handle.write(payload[: max(1, len(payload) // 2)])
+            else:
+                original_append(path, payload)
+            raise OSError("disk temporarily unavailable")
+        return original_append(path, payload)
+
+    monkeypatch.setattr(store, "_append_session_payload", fail_once)
+
+    with pytest.raises(OSError, match="temporarily unavailable"):
+        store.append_session_event({"event": "goal_access_started"})
+    assert store.session_events_pending is True
+    failed_file = next((tmp_path / "sessions").glob("*.jsonl"))
+    assert failed_file.read_bytes() == b""
+
+    store.retry_session_events()
+
+    assert store.session_events_pending is False
+    event_file = next((tmp_path / "sessions").glob("*.jsonl"))
+    event = json.loads(event_file.read_text(encoding="utf-8"))
+    assert event["event"] == "goal_access_started"
+    assert "ts" in event
 
 
 def test_state_persistence_round_trip(tmp_path):

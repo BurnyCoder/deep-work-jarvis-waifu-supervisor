@@ -25,9 +25,12 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - `HostsBlocker` writes both `127.0.0.1` and `::1` entries inside a
      marker-fenced `# >>> deepwork block start` section, then runs
      [`ipconfig /flushdns`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/ipconfig).
-   - Starting a session, starting or stopping a break, or changing agent state
-     reapplies the effective blocklist. `/disable` and normal interpreter
-     shutdown remove the fenced section.
+   - Session, temporary-access, break, and agent transitions mark a new desired
+     policy. One locked reconciliation writes the newest policy immediately;
+     if that write fails, `/status.enforcement.reconciliation_pending` remains
+     true and the enforcer retries it on a later tick without letting an older
+     write overwrite newer state. `/disable` requests fenced-section removal,
+     and normal interpreter shutdown also removes it.
 
 2. **Distraction-app termination**
    - While mode is ON or BREAK, the enforcer checks every
@@ -42,9 +45,10 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      OpenCV contributes one webcam frame when camera capture succeeds; webcam
      failure is non-fatal.
    - The images are stacked into one timestamped, labeled JPEG.
-   - Every successful capture immediately triggers one Responses API
-     evaluation over the newest one through
-     `PROGRESS_WINDOW_CAPTURES` stitched captures, oldest first.
+   - A successful capture triggers one Responses API evaluation over the newest
+     one through `PROGRESS_WINDOW_CAPTURES` stitched captures, oldest first,
+     provided its versioned monitoring context still matches. A transition
+     during capture discards it before model work.
    - With the defaults, the fifth successful tick is the first full
      five-capture window. Five captures sampled five minutes apart span about
      20 minutes from the oldest image to the newest, although that first full
@@ -56,7 +60,22 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
 4. **Spoken feedback**
    - Starting a session generates and queues an LLM-written good-luck message.
      Starting or manually stopping a break queues a context-grounded
-     acknowledgment.
+     acknowledgment. These state-transition messages and temporary-access
+     acknowledgments share one FIFO worker, so a later break or session message
+     cannot overtake an earlier grant transition.
+   - Starting temporary goal access, completing it manually, or reaching its
+     timer records the complete lifecycle event immediately and requests one
+     context-grounded acknowledgment only after hosts reconciliation succeeds.
+     A shared ordered in-memory queue preserves start/end speech across a
+     transient enforcement failure. Requests are bound to policy revisions: a
+     successful reconciliation approves messages that its applied policy makes
+     true, while a failed permission transition superseded by a newer policy is
+     dropped rather than announced. Approved requests reach the separate
+     transition worker, so model/TTS latency cannot hold the policy lifecycle
+     lock or delay expiry. Model/TTS failure is logged without
+     rolling state back or retrying the utterance. If opening enforcement never
+     succeeds before the grant ends, its now-stale start acknowledgment is
+     cancelled; the canonical start and end events remain recorded.
    - Each successful productivity evaluation queues exactly one utterance.
      An ordinary productive verdict speaks the vision model's reason directly;
      that reason is prompted to integrate a brief, naturally varied affirmation
@@ -78,10 +97,12 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      [OpenAI TTS guide](https://developers.openai.com/api/docs/guides/text-to-speech).
 
 5. **ON, OFF, and BREAK modes**
-   - **ON:** effective website blocking, app termination, and productivity
-     monitoring are active.
-   - **OFF:** entering this mode through `/disable` clears the hosts section,
-     and monitor/app enforcement ticks do no work.
+   - **ON:** desired website blocking, app termination, and productivity
+     monitoring are active. `/status` identifies any pending hosts
+     reconciliation.
+   - **OFF:** entering this mode through `/disable` requests removal of the
+     hosts section, and monitor/app enforcement ticks do no work. A failed
+     removal remains pending for a later enforcer retry.
    - **BREAK:** monitoring pauses until the timed break expires or the user
      selects **Stop break and resume work**. Task-required sites remain open,
      and the break can add selected site/app exceptions.
@@ -104,7 +125,29 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - Task and preset keys are validated server-side. Starting another session
      resets the one-off choices.
 
-7. **Agentic engineering mode**
+7. **Repeatable temporary goal access**
+   - During an ON session, the dashboard can open any configured website
+     groups for a required subgoal. One grant may be active at a time, but
+     completing or expiring it immediately permits another; there is no
+     per-session count or cumulative-minute limit.
+   - A grant lasts for 1–240 wall-clock minutes or until the current session
+     ends. It leaves the session in ON mode, spends no social-break allowance,
+     never spares desktop apps, and does not itself pause productivity
+     monitoring.
+   - The analyzer receives the exact subgoal and temporary site groups.
+     Visiting an allowed site is productive only when the visible activity
+     serves both the session topic and the stated subgoal.
+   - Every relevant state transition changes a versioned monitoring context.
+     The next monitor tick resets its rolling window; if that context changes
+     during capture or model analysis, the stale verdict, event, and speech are
+     discarded and the following tick starts with the new context.
+   - BREAK preserves the grant but suspends its website exceptions while the
+     timer continues. An unexpired grant resumes when the break ends; an
+     expired grant does not. Suspension removes only the grant's permission;
+     permanent task, break, or agentic policy can still keep an overlapping
+     site open.
+
+8. **Agentic engineering mode**
    - An optional watcher uses the same stitched monitor/webcam capture path and
      a low-detail vision request every `AGENT_CHECK_INTERVAL_S` seconds.
    - When the latest verdict changes to "agent working," the **website**
@@ -116,22 +159,24 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - Detection occurs on scheduled polls, not instantly, and AI classification
      can be wrong. Agentic waiting does not spend social-break allowance.
 
-8. **Local realtime dashboard**
+9. **Local realtime dashboard**
    - The Flask development server binds only to `127.0.0.1` and defaults to
      port `5000` through `UI_PORT`.
    - The browser requests the no-cache `/status` JSON endpoint every three
      seconds, never overlaps polls, pauses polling in a hidden tab, and keeps
      the last good view during a temporary connection failure.
-   - It displays session state, task access, break and agent state, configured
-     effective enforcement counts, current-session verdict history, and the
-     cadence/result/error state of all scheduler loops.
+   - It displays session state, permanent and temporary task access, break and
+     agent state, desired enforcement counts and reconciliation state,
+     current-session verdict history, and the cadence/result/error state of all
+     scheduler loops.
 
-9. **Local artifacts and logs**
+10. **Local artifacts and logs**
    - `results/captures/*.jpg`: stitched productivity and agent-watch captures.
    - `results/llm/*.json`: full successful model response objects and complete
      textual prompts. Image request payloads refer to the separately stored
      JPEG paths instead of duplicating base64 data.
-   - `results/sessions/*.jsonl`: timestamped session events.
+   - `results/sessions/*.jsonl`: serialized timestamped session events;
+     transient failed lines remain queued in memory for retry.
    - `results/state.json`: daily social usage and previous topics only.
    - `logs/deepwork_*.log`: timestamped runtime logs, also streamed to the
      terminal.
@@ -149,14 +194,21 @@ flowchart TD
     Main --> Scheduler["Scheduler"]
     Main --> Store["ResultsStore"]
 
-    UI -- "start · start/stop break · agentic · disable" --> State
-    UI -- "apply / clear" --> Hosts["HostsBlocker"]
+    UI -- "start · start/stop goal access · start/stop break · agentic · disable" --> State
+    UI -- "canonical grant events" --> Store
+    UI --> GoalFeedback["pending + policy-approved + ready FIFO<br/>transition feedback"]
+    UI --> Reconcile["locked policy reconciliation<br/>retry remains pending on failure"]
     UI -- "GET /status" --> Status["state + RuntimeStatus snapshot"]
 
     Scheduler --> Enforcer["Enforcer loop"]
     Enforcer --> AppKiller["psutil app killer"]
-    Enforcer -- "expired break" --> State
-    Enforcer -- "reapply" --> Hosts
+    Enforcer -- "expired break or goal access" --> State
+    Enforcer -- "expiry event" --> Store
+    Enforcer --> GoalFeedback
+    Enforcer -- "retry latest dirty policy" --> Reconcile
+    Reconcile --> Hosts["HostsBlocker"]
+    Reconcile -- "success" --> GoalFeedback
+    GoalFeedback --> TransitionVoice["independent daemon worker<br/>ordered transition message + speech"]
 
     Scheduler --> Monitor["Productivity loop"]
     Monitor --> Gate{"monitoring_active?"}
@@ -166,7 +218,9 @@ flowchart TD
     Capture --> Store
     Capture -- "monitor caller" --> Analyzer["rolling 1..N capture analyzer"]
     Analyzer --> Vision["OpenAI Responses API<br/>structured verdict"]
-    Vision --> State
+    Vision --> ContextGate{"same monitoring<br/>context revision?"}
+    ContextGate -- "yes: atomic record" --> State
+    ContextGate -- "no: discard" --> Stale["context_changed<br/>reset next tick"]
     State --> Feedback["affirming direct reason<br/>or generated nudge/milestone praise"]
     Feedback --> Speech["single SpeechQueue worker"]
     Speech --> TTS["OpenAI Speech API or pyttsx3"]
@@ -175,7 +229,7 @@ flowchart TD
     AgentWatch --> CaptureLock
     Capture -- "agent-watch caller" --> AgentVision["single-capture activity verdict"]
     AgentVision --> State
-    State --> Hosts
+    State --> Reconcile
 
     Scheduler --> Runtime["RuntimeStatus"]
     Runtime --> Status
@@ -186,6 +240,11 @@ The scheduler uses fixed-delay loops: each loop waits its configured interval,
 runs the blocking tick, then waits again. Capture/API duration therefore adds
 to the wall-clock time between tick starts, and session Start does not reset
 the global loop countdown.
+
+All state-changing routes and scheduler transitions publish hosts policy
+through the same state-owned reconciliation lock. A failed backend call keeps
+the latest desired policy dirty for a later enforcer retry; while it is
+pending, the desired dashboard counts can differ from the hosts file.
 
 The productivity and agent-watch loops share one capture lock because
 [OpenCV documents `VideoCapture` as non-thread-safe](https://docs.opencv.org/master/d0/db6/tutorial_orbbec_astra_openni.html).
@@ -283,15 +342,19 @@ For a normal run:
    `http://127.0.0.1:<UI_PORT>`.
 3. Enter a topic, choose only task-required sites, optionally enable agentic
    mode, and select **Start session**.
-4. Start a timed break when needed. While it is active, use **Stop break and
-   resume work** to end it early; the stop action needs no confirmation.
-5. Use Ctrl+C for a normal shutdown so the registered cleanup can clear the
+4. When a blocked site becomes necessary, enter a concrete goal, select the
+   site groups, choose a timer or session-end duration, and start temporary
+   access. Select **Goal complete — stop access** when finished; another grant
+   can then start immediately.
+5. Start a timed break when needed. An active goal grant is suspended while
+   the break runs and resumes only if its wall-clock timer has not expired.
+6. Use Ctrl+C for a normal shutdown so the registered cleanup can clear the
    hosts section. Do not assume that closing or killing the console will run
    cleanup.
 
 The server is Flask's development server and is intentionally loopback-only.
-Do not expose it to a network without adding production serving, authentication,
-and request protections; Flask explicitly says its
+It has no authentication or CSRF defense. Do not expose it to a network without
+adding production serving, authentication, and request protections; Flask says its
 [development server is not for production](https://flask.palletsprojects.com/server/).
 
 ### Double-click launcher
@@ -327,6 +390,13 @@ Invoke-RestMethod "http://127.0.0.1:$port/status"
 The dashboard renders LLM text with `textContent` and does not expose saved
 capture images or raw prompt files through an HTTP route.
 
+`goal_access` is additive in `/status`. It is `null` when no grant is active;
+otherwise it reports `goal`, `allowed_sites`, `allowed_site_labels`,
+`started_at`, optional `expires_at`, `requested_minutes`, `remaining_s`,
+`until_session_end`, and whether BREAK currently makes `suspended` true.
+`enforcement.reconciliation_pending` reports whether the desired hosts policy
+still needs a successful backend write.
+
 ## Task-required sites and presets
 
 Create an optional `projects.json` beside `main.py`:
@@ -350,6 +420,43 @@ invalid shape, an unknown preset, or an unknown task/preset site key fails
 before the session can weaken enforcement. One-off task access is intentionally
 excluded from `results/state.json`.
 
+## Temporary goal access
+
+`POST /goal-access` accepts a non-empty `goal`, repeated validated
+`allowed_sites` keys, `duration_mode` equal to `timed` or `session_end`, and a
+whole `minutes` value from 1 through 240 for timed grants. It succeeds only
+during ON mode when no other grant is active. `POST /goal-access/stop` has no
+fields and is safe to repeat.
+
+Only the active immutable grant record is held in memory. Its start event
+contains the full goal, site keys and labels, and timing; the end event repeats
+those fields and adds its end time and reason in the session JSONL. Starting
+another session, successfully disabling state, or a normal registered shutdown
+ends and records the active grant. Restarting the Python process restores
+neither sessions nor grants; a hard termination can still skip shutdown cleanup
+and its end event.
+
+Every start/manual-stop/expiry transition records its canonical event before
+hosts reconciliation. If the backend raises, a route returns HTTP 503 and the
+enforcer retries. A still-relevant transition acknowledgment remains pending
+and is published once after a supporting reconciliation succeeds. Messages are
+bound to the policy revision they describe, so a failed permission transition
+superseded by a newer applied policy is discarded instead of falsely announced.
+If an unapplied grant ends through stop, expiry, replacement, Disable, or shutdown first, its
+stale start acknowledgment is cancelled rather than spoken. Published requests
+are generated by an ordered daemon worker outside the lifecycle lock.
+Consequently, dashboard state describes the desired policy; check
+`enforcement.reconciliation_pending` before treating it as confirmation of the
+Windows hosts file.
+
+Session JSONL appends are serialized and retain complete timestamped lines in
+memory after a transient write failure. Routes and expiry still apply the newest
+hosts policy immediately; the enforcer retries the event, and the matching
+transition acknowledgment waits until earlier events are durable. Partial or
+close-time appends are truncated back to the prior line boundary before retry,
+preventing duplicate/corrupt rows. Hard process termination can still lose
+in-memory retries.
+
 Break exceptions use comma-separated group keys in the dashboard. The current
 break route relies on browser-side duration/type constraints and does not
 perform the strict task/preset validation. A forged request can therefore
@@ -365,7 +472,8 @@ session JSONL event.
 
 - Every productivity and agent-watch vision request uploads the stitched
   monitor image and optional webcam frame to OpenAI as image input. Topics,
-  allowed-site context, observations, and feedback prompts are also sent.
+  temporary access goals, allowed-site context, observations, and feedback
+  prompts are also sent.
 - `TTS_ENGINE=pyttsx3` keeps audio synthesis local but does **not** make the
   rest of the application offline.
 - Captures, logs, exchange JSON, and state are ordinary unencrypted local
@@ -374,8 +482,11 @@ session JSONL event.
 - `.env`, `logs/`, and `results/` are gitignored. Never force-add them.
 - The app does not calculate spend. A normal successful productivity tick uses
   one multi-image vision request and one speech request; off-track nudges and
-  30-minute streak-milestone praise add a text-generation request. Agentic mode
-  adds polling vision requests and transition message/speech requests.
+  30-minute streak-milestone praise add a text-generation request. Each
+  normally reconciled goal-access start/manual stop/expiry generates one
+  transition message and queues one speech; failures can prevent a downstream
+  call. Agentic mode adds polling vision requests and transition
+  message/speech requests.
 - OpenAI meters each image as input tokens, and tokenization depends on model,
   dimensions, and detail. Use the current
   [vision guide](https://developers.openai.com/api/docs/guides/images-vision)
@@ -405,20 +516,33 @@ administrator access, an API call, capture hardware, or audio playback.
    the actual browser because browser-level resolution and caches can differ.
 5. Launch Discord or Steam; an exact configured process should be terminated
    on an enforcement tick.
-6. Start a ten-minute social break allowing `reddit`; confirm the full
+6. Start a timed temporary grant for `reddit` with a concrete goal. Confirm
+   Reddit opens, monitoring stays active, desktop apps remain targeted, social
+   allowance is unchanged, and `/status.goal_access` counts down. Complete it,
+   start another grant immediately, and confirm both cycles have independent
+   start/end events and spoken acknowledgments.
+7. Start a temporary grant, then start a break. Confirm a grant-only site
+   re-blocks during BREAK, an overlapping task/break-permitted site remains
+   open, the wall-clock countdown continues, and the grant resumes only when
+   the break ends before expiry.
+8. Start a ten-minute social break allowing `reddit`; confirm the full
    reservation is deducted immediately and monitoring pauses. Stop it after a
    few seconds; confirm one minute remains charged, the other nine are
    refunded, `reddit` is re-blocked, monitoring resumes, and a return-to-work
    message is spoken. Also let a later one-minute break expire and confirm its
    full reservation remains charged.
-7. Submit a wrong disable phrase and confirm HTTP 403/state remains ON; submit
+9. Submit a wrong disable phrase and confirm HTTP 403/state remains ON; submit
    the exact phrase and confirm the fenced hosts section is removed.
-8. Run `uv run python main.py --smoke` and inspect the newest files under
+10. Run `uv run python main.py --smoke` and inspect the newest files under
    `logs/`, `results/captures/`, `results/llm/`, and `results/sessions/`.
-9. Verify that the stored prompt describes the selected task sites
-   conditionally. For a productive result, confirm its reason includes a
-   natural affirmation grounded in concrete evidence, does not invent change
-   over time from the single capture, and matches the recorded and spoken line.
+11. Verify that the stored prompt describes permanent and temporary task sites
+    conditionally and includes the complete temporary goal. For a productive
+    result, confirm its reason includes a natural affirmation grounded in
+    concrete evidence, does not invent change over time from the single
+    capture, and matches the recorded and spoken line.
+12. With a fake blocker that fails once, verify the mutating route returns 503,
+    `/status.enforcement.reconciliation_pending` becomes true, and a later
+    enforcer tick writes only the newest desired policy and clears the flag.
 
 ## Known limitations
 
@@ -426,7 +550,9 @@ administrator access, an API call, capture hardware, or audio playback.
   Unlisted subdomains, alternate domains, direct IP access, proxies, VPNs, or
   application-specific resolvers can bypass or partially defeat blocking.
   For Substack, this project covers `substack.com` and `www.substack.com`, not
-  arbitrary author subdomains.
+  arbitrary author subdomains. Temporary goal access likewise opens whole
+  configured hostname groups; it cannot technically confine browsing to the
+  written goal or a particular post.
 - **DoH behavior varies by resolver:** Microsoft's
   [Windows resolver documentation](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues)
   says the DNS client checks its cache and hosts file before querying DNS, but
@@ -443,7 +569,21 @@ administrator access, an API call, capture hardware, or audio playback.
   wide stitched images, occlusion, and ambiguous activity can produce an
   incorrect verdict.
 - **Fixed-delay timing:** API and capture latency extend the real interval.
-  Agent completion can remain undetected until a later watcher tick.
+  Agent completion can remain undetected until a later watcher tick, and a
+  timed goal grant closes on the first later enforcer tick rather than at an
+  exact wall-clock instant. Goal-access acknowledgment generation runs on a
+  separate worker and therefore does not delay the enforcer or extend a grant.
+- **Hosts writes can fail:** state and session events can advance before the
+  Windows hosts file is updated. The dashboard exposes this as
+  `enforcement.reconciliation_pending`, and the enforcer retries, but access is
+  not confirmed until a write succeeds. Still-relevant ordered acknowledgments
+  wait in process memory for a successful reconciliation; an unapplied start is
+  dropped if its grant ends first. Hard termination can lose pending or queued
+  speech, while canonical JSONL events already written remain available.
+- **Artifact writes can fail:** transient session-JSONL failures retain complete
+  lines in memory and are retried without delaying hosts enforcement. Matching
+  transition speech waits behind those lines, but hard termination before a
+  successful retry can still lose the in-memory event and acknowledgment.
 - **Break validation is incomplete:** HTML constrains normal form input, but
   `/break` does not validate the duration range, kind, or exception keys
   server-side. In particular, a forged negative social duration can corrupt

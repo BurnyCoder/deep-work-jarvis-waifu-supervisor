@@ -2,10 +2,17 @@
 # faked (no network); the TTS queue is tested with an injected speak function.
 
 import struct
+import threading
 import time
+from datetime import datetime
 
+from deepwork.feedback.goal_access import (
+    GoalAccessFeedbackQueue,
+    queue_goal_access_feedback,
+)
 from deepwork.feedback.messages import MessageGenerator, build_prompt
 from deepwork.feedback.tts import SpeechQueue, fix_streamed_wav_header
+from deepwork.state import SessionState
 from deepwork.storage import ResultsStore
 
 
@@ -46,6 +53,26 @@ def test_build_prompt_covers_all_message_kinds():
     p = build_prompt("break_end_ack", purpose="coffee", charged_minutes=2,
                      session_context=CTX)
     assert "coffee" in p and "2" in p and "back" in p.lower()
+    p = build_prompt(
+        "goal_access_start",
+        goal="collect the exact launch quotation",
+        site_labels="X and YouTube",
+        duration_description="for 12 minutes",
+        session_context=CTX,
+    )
+    assert "collect the exact launch quotation" in p
+    assert "X and YouTube" in p
+    assert "for 12 minutes" in p
+    p = build_prompt(
+        "goal_access_end",
+        goal="collect the exact launch quotation",
+        site_labels="X and YouTube",
+        end_reason="the user marked the goal complete",
+        session_context=CTX,
+    )
+    assert "collect the exact launch quotation" in p
+    assert "X and YouTube" in p
+    assert "the user marked the goal complete" in p
 
 
 def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
@@ -60,7 +87,17 @@ def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
                         ("break_end_ack", {"purpose": "p",
                                            "charged_minutes": 2}),
                         ("agent_running", {"reason": "spinner visible"}),
-                        ("agent_done", {"reason": "response finished"})]:
+                        ("agent_done", {"reason": "response finished"}),
+                        ("goal_access_start", {
+                            "goal": "collect citations",
+                            "site_labels": "X",
+                            "duration_description": "until the task ends",
+                        }),
+                        ("goal_access_end", {
+                            "goal": "collect citations",
+                            "site_labels": "X",
+                            "end_reason": "the timer expired",
+                        })]:
         p = build_prompt(kind, session_context=CTX, **extra)
         assert CTX in p, f"{kind} prompt missing session context"
     nudge = build_prompt("nudge", topic="t", reason="r",
@@ -69,6 +106,61 @@ def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
     assert "Reddit front page on monitor 2" in nudge
     # The template must instruct the model to reference what was seen.
     assert "mention" in nudge.lower()
+
+
+def test_goal_access_prompts_preserve_full_goal_and_site_labels():
+    # Goal text and labels are audit-sensitive user context; prompt generation
+    # must preserve them verbatim rather than applying display-style shortening.
+    full_goal = (
+        "Fetch the complete announcement text, verify each named dependency "
+        "against its linked release note, and preserve the author's caveat."
+    )
+    site_labels = "X / Twitter, YouTube, Reddit, LinkedIn"
+
+    start = build_prompt(
+        "goal_access_start",
+        goal=full_goal,
+        site_labels=site_labels,
+        duration_description="until the current task ends",
+        session_context="topic: prepare a release brief",
+    )
+    end = build_prompt(
+        "goal_access_end",
+        goal=full_goal,
+        site_labels=site_labels,
+        end_reason="automatic timer expiry",
+        session_context="topic: prepare a release brief",
+    )
+
+    assert full_goal in start and full_goal in end
+    assert site_labels in start and site_labels in end
+    assert "until the current task ends" in start
+    assert "automatic timer expiry" in end
+
+
+def test_goal_access_prompts_describe_exception_without_overstating_enforcement():
+    """Transition speech must stay truthful when another policy overlaps."""
+    start = build_prompt(
+        "goal_access_start",
+        goal="check the source announcement",
+        site_labels="X / Twitter and Reddit",
+        duration_description="for 10 minutes",
+        session_context="topic: write a sourced brief",
+    )
+    end = build_prompt(
+        "goal_access_end",
+        goal="check the source announcement",
+        site_labels="X / Twitter and Reddit",
+        end_reason="the user marked the goal complete",
+        session_context="topic: write a sourced brief",
+    )
+
+    assert "temporary goal-scoped exception" in start.lower()
+    assert "does not imply" in start.lower()
+    assert "now available" not in start.lower()
+    assert "temporary goal-scoped exception" in end.lower()
+    assert "does not claim" in end.lower()
+    assert "being re-blocked" not in end.lower()
 
 
 def test_generator_calls_llm_and_persists_exchange(tmp_path):
@@ -100,6 +192,60 @@ def test_speech_queue_speaks_in_order_and_survives_errors():
     q.wait_idle(timeout=5)
     q.stop()
     assert spoken == ["one", "two"]                # order kept, error skipped
+
+
+def test_goal_access_feedback_queue_returns_before_slow_model_work():
+    """The production adapter cannot hold up wall-clock policy transitions."""
+
+    started, release = threading.Event(), threading.Event()
+
+    class BlockingMessages:
+        def generate(self, kind, **ctx):
+            started.set()
+            assert release.wait(timeout=2)
+            return f"<{kind}>"
+
+    class Speech:
+        def __init__(self):
+            self.spoken = []
+
+        def say(self, text):
+            self.spoken.append(text)
+
+    now = datetime(2026, 7, 20, 9, 0, 0)
+    state = SessionState()
+    state.start_session("research", now=now)
+    access, reason = state.start_goal_access(
+        "Fetch one source",
+        ("twitter",),
+        5,
+        now=now,
+    )
+    assert access is not None and reason == ""
+    queue_goal_access_feedback(
+        state,
+        "goal_access_start",
+        access,
+        now=now,
+    )
+    state.mark_goal_access_feedback_policy_applied()
+    state.release_goal_access_feedback()
+    speech = Speech()
+    delivery = GoalAccessFeedbackQueue(state, BlockingMessages(), speech)
+
+    before = time.monotonic()
+    delivery.wake()
+    elapsed = time.monotonic() - before
+
+    assert elapsed < 0.1
+    assert started.wait(timeout=1)
+    assert speech.spoken == []
+    release.set()
+    assert delivery.wait_idle(timeout=2) is True
+    delivery.stop()
+    delivery.thread.join(timeout=1)
+    assert speech.spoken == ["<goal_access_start>"]
+    assert not delivery.thread.is_alive()
 
 
 def test_fix_streamed_wav_header_patches_placeholder_sizes(tmp_path):

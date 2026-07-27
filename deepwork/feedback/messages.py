@@ -1,7 +1,7 @@
 # LLM-generated feedback messages (requirement 4): the words spoken to the
-# user are never canned — a text model writes each good-luck, nudge, praise
-# and break start/end acknowledgment from live context (topic, verdict reason,
-# break purpose). One shared generate() path = no duplicated call code.
+# user are never canned — a text model writes each good-luck, nudge, praise,
+# break acknowledgment, and temporary-access transition from live context.
+# One shared generate() path = no duplicated call code.
 # Responses API text generation: https://github.com/openai/openai-python
 
 import logging
@@ -66,6 +66,32 @@ _TEMPLATES = {
         "Write one short, upbeat spoken sentence welcoming them back and "
         "encouraging them to return to their current task. No emojis, it will "
         "be read aloud."
+    ),
+    # State the goal, affected sites, and transition constraint explicitly;
+    # OpenAI's current model guidance recommends outcome-focused prompts with
+    # concrete goals, relevant context, constraints, and success criteria:
+    # https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices
+    "goal_access_start": (
+        "A user has started a temporary goal-scoped exception for website "
+        "access for the explicit goal: {goal!r}. Its selected website groups "
+        "are: {site_labels!r}. The access duration is "
+        "{duration_description}. Starting this exception does not imply that "
+        "every selected group was blocked immediately beforehand, because "
+        "another active policy may already permit one. Write one short, "
+        "friendly spoken sentence confirming only the temporary exception "
+        "and reminding them to use it specifically for that goal. No emojis, "
+        "it will be read aloud."
+    ),
+    "goal_access_end": (
+        "The temporary goal-scoped exception for website access for the "
+        "explicit goal {goal!r} has ended. Its selected website groups were: "
+        "{site_labels!r}. The exception ended because: {end_reason!r}. This "
+        "removes only this grant's permission; it does not claim that every "
+        "selected group is now blocked, because another active policy may "
+        "still permit one. Write one short, supportive spoken sentence "
+        "acknowledging the outcome and directing the user back to their "
+        "current task without overstating effective enforcement. No emojis, "
+        "it will be read aloud."
     ),
 }
 
