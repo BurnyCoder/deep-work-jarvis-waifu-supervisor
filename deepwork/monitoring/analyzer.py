@@ -205,8 +205,10 @@ class ProductivityAnalyzer:
     def __init__(self, client, model: str, store: ResultsStore,
                  window_size: int = 5, reasoning_effort: str = "xhigh"):
         # client injected (real openai.OpenAI in prod, fake in tests).
-        if window_size < 1:
-            raise ValueError("window_size must be at least 1")
+        if window_size < 2:
+            # A one-slot deque could evaluate alignment but could never reach
+            # the capture-two comparison promised by this analyzer.
+            raise ValueError("window_size must be at least 2")
         self.client = client
         self.model = model
         self.store = store

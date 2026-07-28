@@ -18,7 +18,7 @@ def test_defaults_when_env_empty():
     assert cfg.text_model == "gpt-5.6-sol"
     assert cfg.text_reasoning_effort == "xhigh"
     assert cfg.capture_interval_s == 300          # 5-minute default cadence
-    assert cfg.progress_window_captures == 5      # rolling 25-minute context
+    assert cfg.progress_window_captures == 5      # maximum comparison history
     assert cfg.kill_interval_s == 3               # app-kill sweep period
     assert cfg.daily_social_cap_min == 120        # 2 h/day social allowance
     assert cfg.ui_port == 5000
