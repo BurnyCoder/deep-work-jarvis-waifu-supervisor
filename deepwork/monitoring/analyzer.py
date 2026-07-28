@@ -1,6 +1,6 @@
 # OpenAI vision productivity analyzer (requirement 3). Global context: every
-# five-minute monitor tick appends one stitched capture to a bounded rolling
-# window, then one vision call compares all currently available captures.
+# active monitor tick appends one stitched capture to a bounded rolling window,
+# then one vision call compares all currently available captures.
 # OpenAI supports multiple images in one Responses content array:
 # https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input
 # Structured outputs via responses.parse:
@@ -20,35 +20,50 @@ from deepwork.storage import ResultsStore
 
 log = logging.getLogger(__name__)
 
+# Dense stitched desktop captures need their original pixels so small code,
+# document, and UI changes remain visible to the productivity model. The fast
+# one-image agent watcher keeps low detail because it only needs coarse status:
+# https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level
+PRODUCTIVITY_IMAGE_DETAIL = "original"
+AGENT_IMAGE_DETAIL = "low"
+
 # System prompt: sets the judging persona; ordinary productive reasons are
 # spoken without another text-model pass, so their acknowledgment belongs here.
 # Concrete writing choices are more reliable than broad tone labels:
-# https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6
+# https://developers.openai.com/api/docs/guides/model-guidance?model=gpt-5.6#prompting-best-practices
 SYSTEM_PROMPT = (
     "You are a gentle, encouraging productivity coach. You receive a series of "
-    "labeled captures (all monitors plus webcam) taken 5 minutes apart during a "
-    "deep-work session, ordered oldest to newest. Each chronological capture is "
-    "one stitched image containing simultaneous panels labeled Monitor 1, "
-    "Monitor 2, and Webcam; those panels are not separate chronological captures. "
-    "Use the explicit chronological capture labels as the only timeline. Judge both whether the work "
-    "matches the stated topic and whether meaningful visible progress is being "
-    "made across the series. Compare changes in documents, code, tests, task "
-    "state, research, visible content, and the user's presence. With only one "
+    "labeled captures from successive monitoring intervals during a deep-work "
+    "session, ordered oldest to newest. Each chronological capture is one "
+    "stitched image containing panels labeled Monitor 1, Monitor 2, and, when "
+    "available, Webcam; those panels are not separate chronological captures. "
+    "Use the explicit chronological capture labels as the only timeline. For "
+    "two or more captures, compare corresponding monitor and webcam panels from "
+    "oldest to newest. Judge both whether the work matches the stated topic and "
+    "whether meaningful task-relevant progress or engagement is visible. Tasks "
+    "that normally create visible artifacts or interactions—coding, writing, "
+    "editing, note-taking, debugging, and active research—should show relevant "
+    "changes. Active research here means visible source navigation, annotation, "
+    "synthesis, or note-taking; task-directed reading follows the static-work "
+    "rule. If those screens are meaningfully unchanged across two or more "
+    "captures and no other task-aligned engagement is visible, set productive "
+    "false and explain the stall gently. Work that can legitimately keep a "
+    "screen static—reading, thinking, calls, physical work, or waiting on "
+    "visibly running builds, tests, or training—may remain productive only when "
+    "the stated topic and concrete screen or webcam evidence support genuine "
+    "engagement. If the task is vague or ambiguous, do not invent an exception: "
+    "meaningfully unchanged captures without concrete task-aligned evidence are "
+    "unproductive. An unrelated visible change is not progress. Timestamps, "
+    "clocks, cursor movement, animations, webcam lighting, or minor posture "
+    "changes alone are incidental and do not establish progress. With only one "
     "capture, judge current task alignment and explicitly avoid claiming a "
     "trend that cannot yet be seen. If that single capture shows genuine "
     "task-aligned engagement, you must set productive true; missing comparison "
     "history alone must never make the verdict false. For exactly one capture, "
     "the observed field must describe only the current scene and end with "
     "'No chronological comparison is available yet'; never call it progress, "
-    "no progress, advanced, or stalled. Before the configured full window, "
-    "use visible changes as evidence, but mark productive false only for visible "
-    "distraction, off-topic activity, or clear non-work—not merely because the "
-    "window is incomplete or looks unchanged. Obey the evaluation phase rule "
-    "in the user message. When a full window shows no meaningful "
-    "progress, mark productive false and explain the stall gently. Do not "
-    "penalize plausibly productive reading, thinking, calls, builds, or other "
-    "work whose progress may not visibly change if the captures contain "
-    "evidence of genuine engagement. Social media and video are unproductive "
+    "no progress, advanced, or stalled. Obey the evaluation rule in the user "
+    "message. Social media and video are unproductive "
     "unless the user message explicitly lists that website group either as "
     "permanently required for the task, with visible activity that serves the "
     "stated overall topic, or as temporary goal access, with visible activity "
@@ -66,10 +81,11 @@ SYSTEM_PROMPT = (
     "focus instead. When productive is false, state the problem gently and "
     "include no praise or congratulations. Reply with: productive true/false; "
     "reason - one short, kind, speech-ready sentence naming the concrete "
-    "evidence for the verdict; and observed - a concrete comparison of what "
-    "changed or stayed "
-    "static from oldest to newest (name visible apps, sites, window titles, "
-    "content, monitors, and webcam presence) so a coach can quote it back."
+    "evidence for the verdict; and observed - for two or more captures, a "
+    "concrete oldest-to-newest account of what materially changed or stayed "
+    "static in the corresponding panels and why that evidence is or is not "
+    "adequate for the stated task. Name visible apps, sites, window titles, "
+    "content, monitors, and webcam presence so a coach can quote it back."
 )
 
 
@@ -126,7 +142,7 @@ class AgentActivityChecker:
         user_content = [
             {"type": "input_text", "text": "Current capture of all monitors follows."},
             {"type": "input_image", "image_url": _image_to_data_url(path),
-             "detail": "low"},
+             "detail": AGENT_IMAGE_DETAIL},
         ]
         request = {"model": self.model,
                    "reasoning": {"effort": self.reasoning_effort},
@@ -151,7 +167,8 @@ class AgentActivityChecker:
                                     {"role": "user",
                                      "content": [user_content[0],
                                                  {"type": "input_image",
-                                                  "file": str(path)}]}]}
+                                                  "file": str(path),
+                                                  "detail": AGENT_IMAGE_DETAIL}]}]}
         self.store.save_llm_exchange("agent_watch", stored_request,
                                      response.model_dump(mode="json", warnings=False))
         return verdict
@@ -164,12 +181,34 @@ def _image_to_data_url(path: Path) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 
+def _evaluation_rule(capture_count: int, window_size: int) -> str:
+    """Describe whether the current request can support a progress comparison."""
+
+    if capture_count == 1:
+        # A first image can prove present distraction or engagement, but it has
+        # no earlier state from which to infer progress or a stall.
+        return (
+            f"SINGLE CAPTURE ({capture_count}/{window_size}): this capture "
+            "cannot establish a stall. No chronological comparison is available; "
+            "judge only current task alignment and visible engagement."
+        )
+    # From capture two onward, every available oldest-to-newest image is valid
+    # evidence; filling the maximum deque is not a prerequisite for a verdict.
+    return (
+        f"COMPARISON ({capture_count}/{window_size}): compare the whole available "
+        "window. A meaningfully unchanged scene may establish a task-dependent "
+        "stall under the task and evidence rules in the system prompt."
+    )
+
+
 class ProductivityAnalyzer:
     def __init__(self, client, model: str, store: ResultsStore,
                  window_size: int = 5, reasoning_effort: str = "xhigh"):
         # client injected (real openai.OpenAI in prod, fake in tests).
-        if window_size < 1:
-            raise ValueError("window_size must be at least 1")
+        if window_size < 2:
+            # A one-slot deque could evaluate alignment but could never reach
+            # the capture-two comparison promised by this analyzer.
+            raise ValueError("window_size must be at least 2")
         self.client = client
         self.model = model
         self.store = store
@@ -217,24 +256,12 @@ class ProductivityAnalyzer:
         # User content: one text part naming the topic + one input_image per
         # capture. Multiple images in one content array are documented at:
         # https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input
-        # detail="low" keeps this frequent comparison fast and inexpensive:
-        # https://developers.openai.com/api/docs/guides/images-vision#specify-image-input-detail-level
-        # Put the rule next to the changing window count. This measured prompt
-        # fix prevents an incomplete but unchanged window from being called
-        # stalled, while still allowing visible distraction to be caught.
-        if len(window) < self.window_size:
-            phase_rule = (
-                f"WARM-UP ({len(window)}/{self.window_size}): do not infer a "
-                "stall. If the captures are task-aligned with no visible "
-                "distraction, off-topic activity, or clear non-work, productive "
-                "MUST be true even when the visible scene is unchanged."
-            )
-        else:
-            phase_rule = (
-                f"FULL WINDOW ({len(window)}/{self.window_size}): compare the "
-                "whole window; genuinely unchanged on-topic work may be marked "
-                "stalled, subject to the reading/thinking/build caveat."
-            )
+        # Original detail preserves dense desktop pixels for task-progress
+        # comparison; each image still counts toward request tokens:
+        # https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level
+        # Put the chronology rule beside the current count so one image cannot
+        # be mistaken for a comparison and capture two can establish a stall.
+        phase_rule = _evaluation_rule(len(window), self.window_size)
         capture_summary = (
             "1 chronological capture follows"
             if len(window) == 1
@@ -279,23 +306,25 @@ class ProductivityAnalyzer:
         stored_content = [header]
         for index, path in enumerate(window, start=1):
             # Interleaved labels make the temporal boundary explicit: each
-            # following image is one simultaneous multi-monitor/webcam composite.
+            # following image contains the panels from one monitoring tick.
             label = {
                 "type": "input_text",
                 "text": f"Chronological capture {index} of {len(window)}: "
-                        "one stitched image with simultaneous monitor/webcam panels.",
+                        "one stitched image with monitor/webcam panels from one "
+                        "monitoring tick.",
             }
             user_content.extend([
                 label,
                 {"type": "input_image",
                  "image_url": _image_to_data_url(path),
-                 "detail": "low"},
+                 "detail": PRODUCTIVITY_IMAGE_DETAIL},
             ])
             # Persist the same uncut text prompt while referring to the already
             # stored JPEG instead of duplicating its large base64 payload.
             stored_content.extend([
                 label,
-                {"type": "input_image", "file": str(path)},
+                {"type": "input_image", "file": str(path),
+                 "detail": PRODUCTIVITY_IMAGE_DETAIL},
             ])
         request = {"model": self.model,
                    # Responses nests effort under `reasoning`; GPT-5.6 supports
@@ -313,9 +342,11 @@ class ProductivityAnalyzer:
               if part["type"] == "input_text"),
         ]
         log.info(
-            "vision request: model=%s reasoning=%s prompt=%r capture_files=%s",
+            "vision request: model=%s reasoning=%s image_detail=%s prompt=%r "
+            "capture_files=%s",
             self.model,
             self.reasoning_effort,
+            PRODUCTIVITY_IMAGE_DETAIL,
             prompt_text,
             ", ".join(path.name for path in window),
         )

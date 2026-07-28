@@ -45,17 +45,33 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      OpenCV contributes one webcam frame when camera capture succeeds; webcam
      failure is non-fatal.
    - The images are stacked into one timestamped, labeled JPEG.
+   - Productivity images are sent with `detail="original"`. With the default
+     GPT-5.6 model, this preserves the supplied dimensions so dense document,
+     code, and UI changes remain available to the model. The agent watcher
+     remains a separate low-detail workload.
    - A successful capture triggers one Responses API evaluation over the newest
      one through `PROGRESS_WINDOW_CAPTURES` stitched captures, oldest first,
      provided its versioned monitoring context still matches. A transition
      during capture discards it before model work.
-   - With the defaults, the fifth successful tick is the first full
-     five-capture window. Five captures sampled five minutes apart span about
-     20 minutes from the oldest image to the newest, although that first full
-     window completes about 25 minutes after an uninterrupted loop begins.
-   - Warm-up prompts forbid declaring a stall merely because fewer than five
-     captures exist. A full window can be judged stalled, while the prompt
-     explicitly allows plausible reading, thinking, calls, and builds.
+   - The first capture judges only current task alignment and engagement; it
+     cannot establish progress or a stall. From the second capture onward, the
+     model compares corresponding monitor and webcam panels across the whole
+     available oldest-to-newest window. `PROGRESS_WINDOW_CAPTURES` is the
+     maximum retained history, not a prerequisite for comparison.
+   - The comparison is task-aware. Coding, writing, editing, note-taking,
+     debugging, and active research normally need meaningful task-relevant
+     changes; an unchanged scene with no other aligned evidence can be judged
+     stalled from capture two. Reading, thinking, calls, physical work, and
+     visibly running builds, tests, or training may remain productive only when
+     concrete topic-aligned evidence supports genuine engagement; vague tasks do
+     not justify an invented static-work exception. Timestamps, clocks, cursors,
+     animations, webcam lighting, minor posture changes, and unrelated visible
+     changes do not establish progress.
+   - With the defaults, comparison begins on the second successful
+     same-context tick, while the fifth is the first maximum-length
+     five-capture window. Its nominal oldest-to-newest span is at least about
+     20 minutes and it completes at least about 25 minutes after an
+     uninterrupted loop begins; capture and API latency extend both timings.
 
 4. **Spoken feedback**
    - Starting a session generates and queues an LLM-written good-luck message.
@@ -81,9 +97,11 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      that reason is prompted to integrate a brief, naturally varied affirmation
      tied to the observed work before naming its concrete evidence. A
      single-capture reason may praise current engagement but cannot claim
-     progress over time; later progress praise requires supporting capture
-     evidence. An off-track verdict or 30-minute streak milestone first uses
-     the text model to generate a context-grounded nudge or richer praise.
+     progress over time. From the second capture onward, progress praise
+     requires task-relevant chronological evidence; when only engagement is
+     supported, the model praises the engagement or focus instead. An off-track
+     verdict or 30-minute streak milestone first uses the text model to generate
+     a context-grounded nudge or richer praise.
    - At the default cadence, each productive verdict credits five streak
      minutes. Six consecutive productive verdicts trigger praise and reset the
      streak counter. This is configured-interval accounting, not measured
@@ -216,8 +234,8 @@ flowchart TD
     Gate -- "no" --> Paused["OFF / BREAK / agent busy"]
     CaptureLock --> Capture["capture_stitched<br/>all monitors + optional webcam"]
     Capture --> Store
-    Capture -- "monitor caller" --> Analyzer["rolling 1..N capture analyzer"]
-    Analyzer --> Vision["OpenAI Responses API<br/>structured verdict"]
+    Capture -- "monitor caller" --> Analyzer["capture 1: task alignment<br/>capture 2+: task-aware rolling comparison"]
+    Analyzer --> Vision["OpenAI Responses API<br/>original-detail structured verdict"]
     Vision --> ContextGate{"same monitoring<br/>context revision?"}
     ContextGate -- "yes: atomic record" --> State
     ContextGate -- "no: discard" --> Stale["context_changed<br/>reset next tick"]
@@ -227,7 +245,7 @@ flowchart TD
 
     Scheduler --> AgentWatch["Agent-watch loop"]
     AgentWatch --> CaptureLock
-    Capture -- "agent-watch caller" --> AgentVision["single-capture activity verdict"]
+    Capture -- "agent-watch caller" --> AgentVision["low-detail single-capture<br/>activity verdict"]
     AgentVision --> State
     State --> Reconcile
 
@@ -286,7 +304,7 @@ environment and lockfile behavior.
 | Variable | Default | Purpose |
 |---|---:|---|
 | `OPENAI_API_KEY` | none | Required API credential |
-| `VISION_MODEL` | `gpt-5.6-sol` | Rolling productivity vision model |
+| `VISION_MODEL` | `gpt-5.6-sol` | Rolling productivity vision model; must support original image detail |
 | `PROGRESS_REASONING_EFFORT` | `xhigh` | Productivity-model reasoning effort |
 | `AGENT_VISION_MODEL` | `gpt-5.6-sol` | Frequent agent-activity vision model |
 | `AGENT_REASONING_EFFORT` | `xhigh` | Agent-activity reasoning effort |
@@ -296,7 +314,7 @@ environment and lockfile behavior.
 | `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
 | `TTS_VOICE` | `coral` | OpenAI speech voice |
 | `CAPTURE_INTERVAL_S` | `300` | Fixed delay before each productivity tick |
-| `PROGRESS_WINDOW_CAPTURES` | `5` | Maximum rolling capture count |
+| `PROGRESS_WINDOW_CAPTURES` | `5` | Maximum rolling comparison history (minimum 2); comparison starts at capture 2 |
 | `KILL_INTERVAL_S` | `3` | Fixed delay before each enforcement tick |
 | `AGENT_CHECK_INTERVAL_S` | `60` | Fixed delay before each agent-watch tick |
 | `DAILY_SOCIAL_CAP_MIN` | `120` | Daily social-break reservation cap |
@@ -313,8 +331,14 @@ especially for the one-minute agent watcher; each workload therefore keeps
 separate `.env` overrides. Sol produces text rather than speech, so TTS remains
 on the dedicated
 [GPT-4o mini TTS](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts).
-Model access and lifecycle can vary, so change the `.env` values and retest if
-your API project cannot use a default.
+`VISION_MODEL` is the constrained override: productivity requests always use
+`detail="original"`, which OpenAI currently documents for GPT-5.4 and future
+models. Choose a model with that capability and retest if the default is not
+available; an unsupported override makes productivity evaluation fail rather
+than silently lowering image detail. Agent-vision and text overrides do not
+inherit that original-detail requirement. Model access and lifecycle can vary,
+so verify overrides against the current
+[vision guide](https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level).
 
 ## Run
 
@@ -470,26 +494,34 @@ session JSONL event.
 
 ## Data, privacy, and cost
 
-- Every productivity and agent-watch vision request uploads the stitched
-  monitor image and optional webcam frame to OpenAI as image input. Topics,
-  temporary access goals, allowed-site context, observations, and feedback
-  prompts are also sent.
+- Each productivity vision request uploads the current rolling set of one
+  through `PROGRESS_WINDOW_CAPTURES` stitched JPEGs to OpenAI. Each JPEG contains
+  every monitor and, when capture succeeds, a webcam frame. An agent-watch
+  request uploads one stitched JPEG. Topics, temporary access goals,
+  allowed-site context, observations, and feedback prompts are also sent.
 - `TTS_ENGINE=pyttsx3` keeps audio synthesis local but does **not** make the
   rest of the application offline.
 - Captures, logs, exchange JSON, and state are ordinary unencrypted local
   files. They may contain sensitive screen, webcam, topic, and model-output
   data. Protect the Windows account and delete old artifacts deliberately.
 - `.env`, `logs/`, and `results/` are gitignored. Never force-add them.
-- The app does not calculate spend. A normal successful productivity tick uses
-  one multi-image vision request and one speech request; off-track nudges and
-  30-minute streak-milestone praise add a text-generation request. Each
-  normally reconciled goal-access start/manual stop/expiry generates one
-  transition message and queues one speech; failures can prevent a downstream
-  call. Agentic mode adds polling vision requests and transition
-  message/speech requests.
-- OpenAI meters each image as input tokens, and tokenization depends on model,
-  dimensions, and detail. Use the current
+- The app does not calculate spend. The first successful productivity tick in
+  each monitoring context uses a one-image vision request; later same-context
+  ticks use one multi-image request and resend the retained rolling history, up
+  to the configured maximum. Each successful tick also queues one speech
+  request; off-track nudges and 30-minute
+  streak-milestone praise add a text-generation request. Each normally
+  reconciled goal-access start/manual stop/expiry generates one transition
+  message and queues one speech; failures can prevent a downstream call.
+  Agentic mode adds polling vision requests and transition message/speech
+  requests.
+- Productivity images use `detail="original"` while agent-watch images use
+  `detail="low"`. OpenAI documents that GPT-5.6 preserves supplied dimensions
+  at original detail, and that large images can use more input tokens and add
+  latency. OpenAI meters each image as input tokens, and tokenization depends on
+  model, dimensions, and detail. Use the current
   [vision guide](https://developers.openai.com/api/docs/guides/images-vision)
+  and [deployment checklist](https://developers.openai.com/api/docs/guides/deployment-checklist#set-image-detail-intentionally)
   and [pricing page](https://developers.openai.com/api/docs/pricing) instead
   of relying on a fixed per-day estimate.
 
@@ -534,13 +566,20 @@ administrator access, an API call, capture hardware, or audio playback.
 9. Submit a wrong disable phrase and confirm HTTP 403/state remains ON; submit
    the exact phrase and confirm the fenced hosts section is removed.
 10. Run `uv run python main.py --smoke` and inspect the newest files under
-   `logs/`, `results/captures/`, `results/llm/`, and `results/sessions/`.
+    `logs/`, `results/captures/`, `results/llm/`, and `results/sessions/`.
 11. Verify that the stored prompt describes permanent and temporary task sites
     conditionally and includes the complete temporary goal. For a productive
     result, confirm its reason includes a natural affirmation grounded in
     concrete evidence, does not invent change over time from the single
-    capture, and matches the recorded and spoken line.
-12. With a fake blocker that fails once, verify the mutating route returns 503,
+    capture, and matches the recorded and spoken line. A smoke run contains only
+    one productivity capture and cannot verify chronological comparison.
+12. Keep a normal session in one unchanged monitoring context through at least
+    two successful productivity ticks. Inspect the second stored productivity
+    exchange: with the default window it should identify `COMPARISON (2/5)`,
+    contain two oldest-first image references with `detail="original"`, and
+    compare corresponding panels using evidence appropriate to the stated task
+    rather than waiting for a five-capture window.
+13. With a fake blocker that fails once, verify the mutating route returns 503,
     `/status.enforcement.reconciliation_pending` becomes true, and a later
     enforcer tick writes only the newest desired policy and clears the flag.
 
@@ -564,10 +603,13 @@ administrator access, an API call, capture hardware, or audio playback.
 - **Process names are finite:** renamed executables, web versions, helper
   processes not listed in `APP_PROCESSES`, and protected processes are outside
   the current app-killer policy.
-- **Low-detail vision is fallible:** the analyzer intentionally sends
-  `detail="low"`, which OpenAI describes as a low-resolution mode. Small text,
-  wide stitched images, occlusion, and ambiguous activity can produce an
-  incorrect verdict.
+- **Vision judgments remain fallible:** the productivity analyzer sends
+  `detail="original"` so the default GPT-5.6 model preserves the supplied image
+  dimensions, but this does not make its verdict ground truth. Wide stitched
+  JPEGs, compression, occlusion, visually ambiguous activity, and work whose
+  progress is not observable can still produce an incorrect verdict. The
+  frequent agent watcher intentionally remains low-detail and can miss small
+  screen text.
 - **Fixed-delay timing:** API and capture latency extend the real interval.
   Agent completion can remain undetected until a later watcher tick, and a
   timed goal grant closes on the first later enforcer tick rather than at an
