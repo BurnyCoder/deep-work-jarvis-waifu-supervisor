@@ -61,7 +61,7 @@ Implementation details live under `deepwork/`:
 | `monitoring/screen_capture.py` | One Pillow image per physical monitor via mss |
 | `monitoring/webcam_capture.py` | Optional DirectShow webcam frame; failure returns `None` |
 | `monitoring/stitcher.py` | Labeled vertical monitor/webcam composite |
-| `monitoring/analyzer.py` | Rolling 1..N structured productivity verdict and single-capture agent-activity verdict |
+| `monitoring/analyzer.py` | Original-detail productivity verdict: current alignment on capture 1 and task-aware rolling comparison from capture 2; low-detail single-capture agent-activity verdict |
 | `feedback/goal_access.py` | Policy-revision-gated transition acknowledgments and independent FIFO model/TTS worker |
 | `feedback/messages.py` | Context-grounded good-luck, nudge, milestone-praise, break, goal-access, and agent-transition text |
 | `feedback/tts.py` | OpenAI WAV or pyttsx3 speaker behind one FIFO worker |
@@ -80,14 +80,29 @@ Implementation details live under `deepwork/`:
   allowance usage and topic history persist. Live goal-access grants never do.
 - A successful productivity capture is evaluated immediately against the
   available rolling window only if its versioned monitoring context still
-  matches. With five captures at a five-minute sampling interval,
-  oldest-to-newest visual span is 20 minutes; the first full window completes
-  around the fifth uninterrupted tick.
+  matches. Capture one judges only current task alignment and cannot establish
+  progress or a stall. From capture two, compare corresponding monitor/webcam
+  panels across the whole available oldest-to-newest window.
+- `PROGRESS_WINDOW_CAPTURES` is a maximum retained history with a minimum value
+  of two, not a comparison threshold. With five captures and the default
+  five-minute fixed delay, the maximum window begins on the fifth uninterrupted
+  same-context tick and spans at least about 20 minutes; capture and model
+  latency extend that timing.
+- Task-aware comparison expects meaningful relevant changes from
+  artifact-producing coding, writing, editing, note-taking, debugging, and
+  active research. Meaningfully unchanged captures with no other task-aligned
+  evidence may be stalled from capture two. Plausibly static reading, thinking,
+  calls, physical work, and visibly running builds, tests, or training remain
+  productive only with concrete topic-aligned engagement evidence. Unrelated
+  changes, timestamps, clocks, cursors, animations, webcam lighting, and minor
+  posture changes do not establish progress. Do not invent a static-work
+  exception for a vague task.
 - The analyzer prompt requires every productive reason to integrate a brief
   affirmation tied to concrete task-aligned evidence and asks the model to vary
   the wording naturally. A single capture may praise current engagement but
-  must not claim change over time; later progress praise requires supporting
-  capture evidence. The canonical reason is stored, displayed, and spoken
+  must not claim change over time. From capture two, progress praise requires
+  supporting task-relevant chronological evidence; otherwise praise only the
+  engagement or focus. The canonical reason is stored, displayed, and spoken
   unchanged on ordinary productive ticks. Off-track and 30-minute
   streak-milestone ticks instead generate a nudge or richer praise, while every
   evaluation still queues exactly one utterance.
@@ -207,8 +222,10 @@ For every change:
 1. Run focused tests during TDD.
 2. Run `uv run pytest`.
 3. Exercise the affected path as a user would. For capture/LLM/TTS changes,
-   run `uv run python main.py --smoke`; for UI/state changes, also exercise the
-   relevant Flask flow or full local app.
+   run `uv run python main.py --smoke`; it covers only the single-capture
+   productivity branch. For rolling-comparison changes, also exercise at least
+   two same-context captures and inspect the second request. For UI/state
+   changes, also exercise the relevant Flask flow or full local app.
 4. Inspect the newest terminal/file logs and relevant `results/` artifacts.
    Confirm prompts, outputs, stored records, and spoken behavior agree.
 5. Fix observed issues, rerun the affected path, and push the corrected
@@ -251,5 +268,10 @@ network, or model nondeterminism.
   necessary.
 - Hosts policy is explicit, not wildcard-based. Substack author subdomains and
   other unlisted alternate domains are not covered.
-- Low-detail stitched vision can miss small screen text. Never present model
-  verdicts as ground truth.
+- Productivity vision uses original detail, which preserves supplied image
+  dimensions with the default GPT-5.6 model but can increase input tokens and
+  latency. `VISION_MODEL` overrides must support original detail; OpenAI
+  currently documents it for GPT-5.4 and future models. Wide composites,
+  occlusion, ambiguity, and visually static work can still mislead it.
+  Agent-watch vision remains low-detail and can miss small screen text. Never
+  present either model verdict as ground truth.

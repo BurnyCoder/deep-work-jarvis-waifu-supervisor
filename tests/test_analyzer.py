@@ -3,6 +3,7 @@
 # client.responses.parse(...) and the returned .output_parsed, per
 # https://developers.openai.com/api/docs/guides/structured-outputs
 
+import json
 import logging
 import pytest
 from PIL import Image
@@ -49,11 +50,39 @@ def test_verdict_requires_observed_description():
     assert "observed" in SYSTEM_PROMPT           # prompt requests the field
     assert "concrete" in SYSTEM_PROMPT.lower()   # ...and concrete specifics
     assert "progress" in SYSTEM_PROMPT.lower()   # compare oldest → newest
-    assert "full window" in SYSTEM_PROMPT.lower()
     assert "reading" in SYSTEM_PROMPT.lower()    # static-but-valid work caveat
     assert "must set productive true" in SYSTEM_PROMPT.lower()
     assert "panels are not separate chronological captures" in SYSTEM_PROMPT.lower()
     assert "no chronological comparison is available yet" in SYSTEM_PROMPT.lower()
+    assert "successive monitoring intervals" in SYSTEM_PROMPT.lower()
+    assert "taken 5 minutes apart" not in SYSTEM_PROMPT.lower()
+
+
+def test_prompt_requires_task_aware_meaningful_snapshot_comparison():
+    """Static pixels become a task-aware verdict only when chronology exists."""
+
+    prompt = SYSTEM_PROMPT.lower()
+    # Corresponding panels, rather than panels inside one stitched moment, form
+    # the chronology that the model must compare from oldest to newest.
+    assert "corresponding monitor and webcam panels" in prompt
+    assert "for two or more captures" in prompt
+    # Artifact-producing tasks normally need visible task-relevant state change,
+    # while genuinely static work needs concrete topic-aligned evidence.
+    assert "coding, writing, editing, note-taking, debugging, and active research" in prompt
+    assert "active research here means visible source navigation" in prompt
+    assert "task-directed reading follows the static-work rule" in prompt
+    assert "reading, thinking, calls, physical work" in prompt
+    assert "visibly running builds, tests, or training" in prompt
+    assert "meaningfully unchanged across two or more captures" in prompt
+    assert "set productive false" in prompt
+    assert "do not invent an exception" in prompt
+    # Pixel noise and off-topic movement must never masquerade as progress.
+    assert "timestamps, clocks, cursor movement, animations, webcam lighting" in prompt
+    assert "minor posture changes" in prompt
+    assert "changes alone are incidental and do not establish progress" in prompt
+    assert "unrelated visible change" in prompt
+    # The unchanged verdict schema stays auditable through its existing text.
+    assert "why that evidence is or is not adequate for the stated task" in prompt
 
 
 def test_productive_reason_prompt_requests_creative_grounded_encouragement():
@@ -143,10 +172,20 @@ def test_request_shape_matches_responses_api(tmp_path):
     user_content = kwargs["input"][-1]["content"]
     images = [c for c in user_content if c["type"] == "input_image"]
     assert len(images) == 2                        # every batched capture sent
-    # Images ride as base64 data URLs with low detail (85 tokens flat/image):
-    # https://developers.openai.com/api/docs/guides/images-vision
+    # Dense stitched computer screens use original detail so small document,
+    # code, and UI changes survive image processing:
+    # https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level
     assert all(i["image_url"].startswith("data:image/jpeg;base64,") for i in images)
-    assert all(i["detail"] == "low" for i in images)
+    assert all(i["detail"] == "original" for i in images)
+    # Persisted exchanges replace base64 with capture-file references while
+    # retaining the exact detail level needed to audit model behavior.
+    exchange_path = max((tmp_path / "llm").glob("*_vision.json"))
+    exchange = json.loads(exchange_path.read_text(encoding="utf-8"))
+    stored_content = exchange["request"]["input"][-1]["content"]
+    stored_images = [part for part in stored_content
+                     if part["type"] == "input_image"]
+    assert all(part["detail"] == "original" for part in stored_images)
+    assert all("file" in part and "image_url" not in part for part in stored_images)
     # The user's topic is in the text part so the model judges relevance.
     texts = [c for c in user_content if c["type"] == "input_text"]
     assert any("thesis" in t["text"] for t in texts)
@@ -217,7 +256,7 @@ def test_request_without_goal_access_remains_backward_compatible(tmp_path):
     assert "No temporary goal-access grant is active" in header
 
 
-def test_request_explicitly_marks_warmup_then_full_window(tmp_path):
+def test_request_protects_one_capture_then_compares_from_second(tmp_path):
     analyzer, client, store = make_analyzer(tmp_path, window_size=3)
     paths = [
         save_named_capture(store, "01.jpg", "red"),
@@ -227,18 +266,20 @@ def test_request_explicitly_marks_warmup_then_full_window(tmp_path):
 
     analyzer.add_capture(paths[0], topic="thesis")
     first_header = client.responses.calls[-1]["input"][-1]["content"][0]["text"]
-    assert "WARM-UP (1/3)" in first_header
-    assert "productive MUST be true" in first_header
-    assert "unchanged" in first_header
+    assert "SINGLE CAPTURE (1/3)" in first_header
+    assert "cannot establish a stall" in first_header
+    assert "No chronological comparison is available" in first_header
 
     analyzer.add_capture(paths[1], topic="thesis")
     second_header = client.responses.calls[-1]["input"][-1]["content"][0]["text"]
-    assert "WARM-UP (2/3)" in second_header
+    assert "COMPARISON (2/3)" in second_header
+    assert "task-dependent stall" in second_header
+    assert "meaningfully unchanged" in second_header
 
     analyzer.add_capture(paths[2], topic="thesis")
     full_header = client.responses.calls[-1]["input"][-1]["content"][0]["text"]
-    assert "FULL WINDOW (3/3)" in full_header
-    assert "stalled" in full_header
+    assert "COMPARISON (3/3)" in full_header
+    assert "whole available window" in full_header
 
 
 def test_complete_text_prompt_and_structured_output_are_logged(tmp_path, caplog):
@@ -260,7 +301,7 @@ def test_complete_text_prompt_and_structured_output_are_logged(tmp_path, caplog)
         )
 
     assert SYSTEM_PROMPT in caplog.text
-    assert "WARM-UP (1/2)" in caplog.text
+    assert "SINGLE CAPTURE (1/2)" in caplog.text
     assert "Chronological capture 1 of 1" in caplog.text
     assert verdict.reason in caplog.text
     assert verdict.observed in caplog.text
@@ -289,7 +330,13 @@ def test_agent_activity_checker_request_shape_and_persistence(tmp_path):
     assert len(images) == 1 and images[0]["detail"] == "low"
     assert images[0]["image_url"].startswith("data:image/jpeg;base64,")
     # Full exchange persisted under its own kind for auditability.
-    assert list((tmp_path / "llm").glob("*_agent_watch.json"))
+    exchange_path = next((tmp_path / "llm").glob("*_agent_watch.json"))
+    exchange = json.loads(exchange_path.read_text(encoding="utf-8"))
+    stored_content = exchange["request"]["input"][-1]["content"]
+    stored_image = next(part for part in stored_content
+                        if part["type"] == "input_image")
+    assert stored_image["detail"] == "low"
+    assert "file" in stored_image and "image_url" not in stored_image
 
 
 def test_exchange_persisted_each_tick_and_reset_clears_window(tmp_path):
@@ -304,6 +351,9 @@ def test_exchange_persisted_each_tick_and_reset_clears_window(tmp_path):
     assert len(image_urls(client.responses.last_kwargs)) == 1
 
 
-def test_window_size_must_be_positive(tmp_path):
-    with pytest.raises(ValueError, match="window_size"):
-        make_analyzer(tmp_path, window_size=0)
+@pytest.mark.parametrize("window_size", [0, 1])
+def test_window_size_must_allow_capture_two_comparison(tmp_path, window_size):
+    # The product contract starts chronological comparison at capture two, so
+    # a one-slot deque would silently disable the feature it claims to provide.
+    with pytest.raises(ValueError, match="at least 2"):
+        make_analyzer(tmp_path, window_size=window_size)
