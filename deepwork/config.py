@@ -101,7 +101,7 @@ class Config:
     tts_model: str = "gpt-4o-mini-tts"       # https://developers.openai.com/api/docs/guides/text-to-speech
     tts_voice: str = "coral"                 # one of the 13 built-in voices
     capture_interval_s: int = 300            # requirement 3: every 5 minutes
-    progress_window_captures: int = 5        # max history; comparison starts at 2
+    progress_window_captures: int = 5        # max history, min 2 for comparison
     kill_interval_s: int = 3                 # app-kill sweep period (seconds)
     agent_check_interval_s: int = 60         # agentic mode: AI-agent activity poll
     daily_social_cap_min: int = 120          # requirement 5: 2 h/day cap

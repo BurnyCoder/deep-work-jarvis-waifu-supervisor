@@ -304,7 +304,7 @@ environment and lockfile behavior.
 | Variable | Default | Purpose |
 |---|---:|---|
 | `OPENAI_API_KEY` | none | Required API credential |
-| `VISION_MODEL` | `gpt-5.6-sol` | Rolling productivity vision model |
+| `VISION_MODEL` | `gpt-5.6-sol` | Rolling productivity vision model; must support original image detail |
 | `PROGRESS_REASONING_EFFORT` | `xhigh` | Productivity-model reasoning effort |
 | `AGENT_VISION_MODEL` | `gpt-5.6-sol` | Frequent agent-activity vision model |
 | `AGENT_REASONING_EFFORT` | `xhigh` | Agent-activity reasoning effort |
@@ -314,7 +314,7 @@ environment and lockfile behavior.
 | `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
 | `TTS_VOICE` | `coral` | OpenAI speech voice |
 | `CAPTURE_INTERVAL_S` | `300` | Fixed delay before each productivity tick |
-| `PROGRESS_WINDOW_CAPTURES` | `5` | Maximum rolling comparison history; comparison starts at capture 2 |
+| `PROGRESS_WINDOW_CAPTURES` | `5` | Maximum rolling comparison history (minimum 2); comparison starts at capture 2 |
 | `KILL_INTERVAL_S` | `3` | Fixed delay before each enforcement tick |
 | `AGENT_CHECK_INTERVAL_S` | `60` | Fixed delay before each agent-watch tick |
 | `DAILY_SOCIAL_CAP_MIN` | `120` | Daily social-break reservation cap |
@@ -331,8 +331,14 @@ especially for the one-minute agent watcher; each workload therefore keeps
 separate `.env` overrides. Sol produces text rather than speech, so TTS remains
 on the dedicated
 [GPT-4o mini TTS](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts).
-Model access and lifecycle can vary, so change the `.env` values and retest if
-your API project cannot use a default.
+`VISION_MODEL` is the constrained override: productivity requests always use
+`detail="original"`, which OpenAI currently documents for GPT-5.4 and future
+models. Choose a model with that capability and retest if the default is not
+available; an unsupported override makes productivity evaluation fail rather
+than silently lowering image detail. Agent-vision and text overrides do not
+inherit that original-detail requirement. Model access and lifecycle can vary,
+so verify overrides against the current
+[vision guide](https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level).
 
 ## Run
 

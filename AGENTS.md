@@ -83,10 +83,11 @@ Implementation details live under `deepwork/`:
   matches. Capture one judges only current task alignment and cannot establish
   progress or a stall. From capture two, compare corresponding monitor/webcam
   panels across the whole available oldest-to-newest window.
-- `PROGRESS_WINDOW_CAPTURES` is a maximum retained history, not a comparison
-  threshold. With five captures and the default five-minute fixed delay, the
-  maximum window begins on the fifth uninterrupted same-context tick and spans
-  at least about 20 minutes; capture and model latency extend that timing.
+- `PROGRESS_WINDOW_CAPTURES` is a maximum retained history with a minimum value
+  of two, not a comparison threshold. With five captures and the default
+  five-minute fixed delay, the maximum window begins on the fifth uninterrupted
+  same-context tick and spans at least about 20 minutes; capture and model
+  latency extend that timing.
 - Task-aware comparison expects meaningful relevant changes from
   artifact-producing coding, writing, editing, note-taking, debugging, and
   active research. Meaningfully unchanged captures with no other task-aligned
@@ -269,6 +270,8 @@ network, or model nondeterminism.
   other unlisted alternate domains are not covered.
 - Productivity vision uses original detail, which preserves supplied image
   dimensions with the default GPT-5.6 model but can increase input tokens and
-  latency. Wide composites, occlusion, ambiguity, and visually static work can
-  still mislead it. Agent-watch vision remains low-detail and can miss small
-  screen text. Never present either model verdict as ground truth.
+  latency. `VISION_MODEL` overrides must support original detail; OpenAI
+  currently documents it for GPT-5.4 and future models. Wide composites,
+  occlusion, ambiguity, and visually static work can still mislead it.
+  Agent-watch vision remains low-detail and can miss small screen text. Never
+  present either model verdict as ground truth.

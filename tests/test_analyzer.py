@@ -351,6 +351,9 @@ def test_exchange_persisted_each_tick_and_reset_clears_window(tmp_path):
     assert len(image_urls(client.responses.last_kwargs)) == 1
 
 
-def test_window_size_must_be_positive(tmp_path):
-    with pytest.raises(ValueError, match="window_size"):
-        make_analyzer(tmp_path, window_size=0)
+@pytest.mark.parametrize("window_size", [0, 1])
+def test_window_size_must_allow_capture_two_comparison(tmp_path, window_size):
+    # The product contract starts chronological comparison at capture two, so
+    # a one-slot deque would silently disable the feature it claims to provide.
+    with pytest.raises(ValueError, match="at least 2"):
+        make_analyzer(tmp_path, window_size=window_size)
