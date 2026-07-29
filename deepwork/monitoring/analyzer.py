@@ -16,6 +16,7 @@ from pathlib import Path
 # https://docs.pydantic.dev/latest/concepts/models/
 from pydantic import BaseModel
 
+from deepwork.access_policy import access_labels
 from deepwork.storage import ResultsStore
 
 log = logging.getLogger(__name__)
@@ -63,13 +64,13 @@ SYSTEM_PROMPT = (
     "the observed field must describe only the current scene and end with "
     "'No chronological comparison is available yet'; never call it progress, "
     "no progress, advanced, or stalled. Obey the evaluation rule in the user "
-    "message. Social media and video are unproductive "
-    "unless the user message explicitly lists that website group either as "
+    "message. Social media, video, chat, and games are unproductive "
+    "unless the user message explicitly lists that website/app access group either as "
     "permanently required for the task, with visible activity that serves the "
     "stated overall topic, or as temporary goal access, with visible activity "
     "that serves both the overall topic and the explicit temporary goal. "
-    "Merely seeing any allowed website never proves productivity; unrelated "
-    "feeds, videos, and games remain unproductive. When productive is true, "
+    "Merely seeing any allowed website or app never proves productivity; unrelated "
+    "feeds, chats, videos, and games remain unproductive. When productive is true, "
     "integrate a brief, natural affirmation tied to the observed work into the "
     "reason, in the spirit of 'Good job' (for example, 'Nice work' or 'Great "
     "focus'); vary the wording rather than using a fixed catchphrase. For "
@@ -227,9 +228,9 @@ class ProductivityAnalyzer:
         self,
         path: Path,
         topic: str,
-        allowed_sites: tuple[str, ...] = (),
+        allowed_groups: tuple[str, ...] = (),
         goal_access_goal: str | None = None,
-        goal_access_sites: tuple[str, ...] = (),
+        goal_access_groups: tuple[str, ...] = (),
     ) -> ProductivityVerdict:
         """Append one capture and evaluate every available recent capture."""
         self._window.append(path)
@@ -240,18 +241,18 @@ class ProductivityAnalyzer:
         return self._analyze(
             window,
             topic,
-            allowed_sites,
+            allowed_groups,
             goal_access_goal,
-            goal_access_sites,
+            goal_access_groups,
         )
 
     def _analyze(
         self,
         window: list[Path],
         topic: str,
-        allowed_sites: tuple[str, ...] = (),
+        allowed_groups: tuple[str, ...] = (),
         goal_access_goal: str | None = None,
-        goal_access_sites: tuple[str, ...] = (),
+        goal_access_groups: tuple[str, ...] = (),
     ) -> ProductivityVerdict:
         # User content: one text part naming the topic + one input_image per
         # capture. Multiple images in one content array are documented at:
@@ -268,29 +269,35 @@ class ProductivityAnalyzer:
             else f"{len(window)} chronological captures follow"
         )
         # Keep permanent task requirements separate from a temporary grant so
-        # the model does not mistake domain access for evidence of progress.
+        # the model does not mistake website/app access for evidence of progress.
         # OpenAI recommends prompts state the goal, context, constraints, and
         # required evidence explicitly:
         # https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices
-        permanent_sites = ", ".join(allowed_sites) if allowed_sites else "none"
+        permanent_labels = (
+            ", ".join(access_labels(allowed_groups)) if allowed_groups else "none"
+        )
         permanent_access_rule = (
-            f"Permanent task-required website groups: {permanent_sites}. "
-            "Seeing a permanently allowed site does not automatically make "
+            "Permanent task-required website/app access groups: "
+            f"{permanent_labels}. Seeing a permanently allowed website or app "
+            "does not automatically make "
             "the activity productive; it must show activity that visibly "
             "serves the stated topic."
         )
         if goal_access_goal is not None:
-            temporary_sites = (
-                ", ".join(goal_access_sites) if goal_access_sites else "none"
+            temporary_labels = (
+                ", ".join(access_labels(goal_access_groups))
+                if goal_access_groups
+                else "none"
             )
             temporary_access_rule = (
-                "Temporary goal-access website groups: "
-                f"{temporary_sites}. Explicit temporary goal: "
+                "Temporary goal-access website/app access groups: "
+                f"{temporary_labels}. Explicit temporary goal: "
                 f"{goal_access_goal!r}. While this grant is active, a "
                 "productive verdict requires visible activity to serve both "
                 "the overall deep-work topic and the explicit temporary goal. "
-                "A temporarily allowed site is never automatically productive; "
-                "unrelated browsing remains unproductive."
+                "A temporarily allowed website or app is never automatically "
+                "productive; unrelated browsing, chat, video, or gaming remains "
+                "unproductive."
             )
         else:
             temporary_access_rule = (

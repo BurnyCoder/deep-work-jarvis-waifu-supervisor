@@ -81,20 +81,20 @@ def test_social_break_draws_down_daily_allowance():
     s = make_state()
     s.start_session("x", now=T0)
     ok, _ = s.start_break("chill on reddit", 30, "social_media",
-                          allowed_sites=["reddit"], now=T0)
+                          allowed_groups=["reddit"], now=T0)
     assert ok and s.mode is Mode.BREAK
     assert s.social_minutes_remaining(now=T0) == 90   # 120 - 30 reserved
     # A break longer than what's left must be refused with a reason string.
     s.end_break_if_due(now=T0 + timedelta(minutes=31))
     ok, reason = s.start_break("more reddit", 100, "social_media",
-                               allowed_sites=["reddit"], now=T0)
+                               allowed_groups=["reddit"], now=T0)
     assert not ok and reason
 
 
 def test_allowance_resets_at_midnight():
     s = make_state()
     s.start_session("x", now=T0)
-    s.start_break("scroll", 120, "social_media", allowed_sites=["reddit"], now=T0)
+    s.start_break("scroll", 120, "social_media", allowed_groups=["reddit"], now=T0)
     assert s.social_minutes_remaining(now=T0) == 0
     tomorrow = T0 + timedelta(days=1)             # usage is keyed by date
     assert s.social_minutes_remaining(now=tomorrow) == 120
@@ -132,8 +132,7 @@ def test_manual_break_stop_refunds_unelapsed_social_minutes(
         "scroll",
         10,
         "social_media",
-        allowed_sites=["reddit"],
-        allowed_apps=["discord"],
+        allowed_groups=["reddit", "discord"],
         now=T0,
     )
 
@@ -167,13 +166,13 @@ def test_manual_away_break_stop_does_not_change_social_allowance():
 
 def test_manual_break_stop_is_idempotent_and_preserves_task_access():
     s = make_state()
-    s.start_session("publish update", now=T0, allowed_sites=["twitter"])
+    s.start_session("publish update", now=T0, allowed_groups=["twitter"])
     assert s.stop_break(now=T0) is None
     s.start_break(
         "reddit pause",
         10,
         "social_media",
-        allowed_sites=["reddit"],
+        allowed_groups=["reddit"],
         now=T0,
     )
 
@@ -197,7 +196,7 @@ def test_effective_blocklist_honours_break_and_project_allowances():
     s.start_session("x", now=T0)
     assert "reddit.com" in s.effective_blocklist()
     # During a reddit-only break, reddit domains unblock, everything else stays.
-    s.start_break("reddit break", 10, "social_media", allowed_sites=["reddit"], now=T0)
+    s.start_break("reddit break", 10, "social_media", allowed_groups=["reddit"], now=T0)
     blocked = s.effective_blocklist()
     assert "reddit.com" not in blocked and "youtube.com" in blocked
     # Project allowlist frees its sites while ON (requirement 5, last option).
@@ -207,12 +206,12 @@ def test_effective_blocklist_honours_break_and_project_allowances():
     assert "x.com" not in blocked and "reddit.com" in blocked
 
 
-def test_task_sites_are_free_monitored_access_and_do_not_spare_apps():
+def test_site_only_task_groups_are_free_monitored_and_do_not_spare_apps():
     s = make_state()
     s.start_session(
         "publish a LinkedIn update",
         now=T0,
-        allowed_sites=["linkedin", "twitter"],
+        allowed_groups=["linkedin", "twitter"],
     )
     blocked = s.effective_blocklist()
     assert "linkedin.com" not in blocked and "x.com" not in blocked
@@ -222,36 +221,67 @@ def test_task_sites_are_free_monitored_access_and_do_not_spare_apps():
     assert s.monitoring_active
 
 
-def test_project_preset_and_one_off_task_sites_are_combined():
+def test_project_preset_and_one_off_task_groups_are_combined():
     s = make_state()
     s.start_session(
         "share research",
         now=T0,
         project="ml-research",
-        allowed_sites=["linkedin", "twitter"],
+        allowed_groups=["linkedin", "twitter"],
     )
+    assert s.work_allowed_groups == ("twitter", "linkedin")
     assert s.work_allowed_sites == ("twitter", "linkedin")
     snapshot = s.status_snapshot(now=T0)
     assert snapshot["work_access"] == {
         "project": "ml-research",
+        "selected_groups": ["twitter", "linkedin"],
+        "allowed_groups": ["twitter", "linkedin"],
+        "allowed_group_labels": ["X / Twitter", "LinkedIn"],
         "selected_sites": ["twitter", "linkedin"],
+        "selected_apps": [],
         "allowed_sites": ["twitter", "linkedin"],
         "allowed_site_labels": ["X / Twitter", "LinkedIn"],
+        "allowed_apps": [],
     }
+
+
+def test_unified_project_preset_can_allow_discord_web_and_desktop_apps():
+    """Preset keys use the same dual/app-only semantics as checkbox choices."""
+
+    s = make_state(
+        project_allowlists={"community": ["discord", "telegram"]},
+    )
+    s.start_session(
+        "coordinate the community release",
+        now=T0,
+        project="community",
+    )
+
+    assert s.work_allowed_groups == ("discord", "telegram")
+    assert s.work_allowed_sites == ("discord",)
+    assert s.work_allowed_apps == ("discord", "telegram")
+    assert "discord.com" not in s.effective_blocklist()
+    assert "discord.exe" not in s.effective_kill_processes()
+    assert "telegram.exe" not in s.effective_kill_processes()
+    work_access = s.status_snapshot(now=T0)["work_access"]
+    assert work_access["allowed_group_labels"] == ["Discord", "Telegram"]
+    assert work_access["allowed_sites"] == ["discord"]
+    assert work_access["allowed_apps"] == ["discord", "telegram"]
 
 
 def test_task_access_resets_on_new_session_and_rejects_unknown_input_atomically():
     s = make_state()
-    s.start_session("first", now=T0, allowed_sites=["twitter"])
+    s.start_session("first", now=T0, allowed_groups=["twitter"])
     s.start_session("second", now=T0 + timedelta(minutes=1))
+    assert s.work_allowed_groups == ()
     assert s.work_allowed_sites == ()
     assert "x.com" in s.effective_blocklist()
 
-    with pytest.raises(ValueError, match="Unknown website group"):
+    with pytest.raises(ValueError, match="Unknown access group"):
         s.start_session(
             "forged",
             now=T0 + timedelta(minutes=2),
-            allowed_sites=["unknown"],
+            allowed_groups=["unknown"],
         )
     assert s.topic == "second"
     assert s.mode is Mode.ON
@@ -262,14 +292,14 @@ def test_task_access_remains_open_during_break_and_after_agent_finishes():
     s.start_session(
         "social campaign",
         now=T0,
-        allowed_sites=["twitter"],
+        allowed_groups=["twitter"],
         agentic=True,
     )
     s.start_break(
         "reddit pause",
         10,
         "social_media",
-        allowed_sites=["reddit"],
+        allowed_groups=["reddit"],
         now=T0,
     )
     blocked = s.effective_blocklist()
@@ -332,7 +362,7 @@ def test_goal_access_is_free_repeatable_and_only_one_can_be_active():
         start_time=T0,
         end_time=T0 + timedelta(minutes=15),
         requested_minutes=15,
-        allowed_sites=("reddit", "twitter"),
+        allowed_groups=("reddit", "twitter"),
     )
     assert "reddit.com" not in s.effective_blocklist()
     assert "x.com" not in s.effective_blocklist()
@@ -399,11 +429,11 @@ def test_goal_access_concurrent_starts_publish_exactly_one_grant():
     assert results[s.goal_access.goal] == (s.goal_access, "")
 
 
-def test_break_suspends_goal_sites_but_timer_continues_and_can_expire():
-    """A break re-blocks grant-only sites without pausing the grant deadline."""
+def test_break_suspends_goal_groups_but_timer_continues_and_can_expire():
+    """A break suspends grant-only permissions without pausing the deadline."""
 
     s = make_state()
-    s.start_session("write thesis", now=T0, allowed_sites=["linkedin"])
+    s.start_session("write thesis", now=T0, allowed_groups=["linkedin"])
     s.start_goal_access(
         "check discussion",
         ["twitter", "linkedin"],
@@ -467,7 +497,7 @@ def test_goal_access_status_context_and_monitoring_context_are_complete():
     """UI, speech, and vision receive coherent views of the same active grant."""
 
     s = make_state()
-    s.start_session("publish research", now=T0, allowed_sites=["linkedin"])
+    s.start_session("publish research", now=T0, allowed_groups=["linkedin"])
     s.start_goal_access(
         "fetch exact wording",
         ["twitter"],
@@ -478,8 +508,11 @@ def test_goal_access_status_context_and_monitoring_context_are_complete():
     payload = s.status_snapshot(now=T0 + timedelta(minutes=4))["goal_access"]
     assert payload == {
         "goal": "fetch exact wording",
+        "allowed_groups": ["twitter"],
+        "allowed_group_labels": ["X / Twitter"],
         "allowed_sites": ["twitter"],
         "allowed_site_labels": ["X / Twitter"],
+        "allowed_apps": [],
         "started_at": (T0 + timedelta(minutes=1)).isoformat(),
         "expires_at": (T0 + timedelta(minutes=11)).isoformat(),
         "requested_minutes": 10,
@@ -490,16 +523,16 @@ def test_goal_access_status_context_and_monitoring_context_are_complete():
     assert "temporary access goal: fetch exact wording" in s.context_summary(
         now=T0 + timedelta(minutes=4)
     )
-    assert "temporary website groups selected: twitter" in s.context_summary(
+    assert "temporary website/app access groups selected: twitter" in s.context_summary(
         now=T0 + timedelta(minutes=4)
     )
     context = s.monitoring_context()
     assert context.session_start == T0
     assert context.topic == "publish research"
-    assert context.permanent_sites == ("linkedin",)
+    assert context.permanent_groups == ("linkedin",)
     assert context.goal_access_start_time == T0 + timedelta(minutes=1)
     assert context.goal_access_goal == "fetch exact wording"
-    assert context.goal_access_sites == ("twitter",)
+    assert context.goal_access_groups == ("twitter",)
 
 
 def test_goal_access_event_is_complete_json_safe_and_canonical():
@@ -510,7 +543,7 @@ def test_goal_access_event_is_complete_json_safe_and_canonical():
         start_time=T0,
         end_time=T0 + timedelta(minutes=10),
         requested_minutes=10,
-        allowed_sites=("twitter",),
+        allowed_groups=("twitter",),
     )
 
     assert goal_access_event(
@@ -521,8 +554,11 @@ def test_goal_access_event_is_complete_json_safe_and_canonical():
     ) == {
         "event": "goal_access_ended",
         "goal": "fetch exact wording",
+        "allowed_groups": ["twitter"],
+        "allowed_group_labels": ["X / Twitter"],
         "allowed_sites": ["twitter"],
         "allowed_site_labels": ["X / Twitter"],
+        "allowed_apps": [],
         "started_at": T0.isoformat(),
         "expires_at": (T0 + timedelta(minutes=10)).isoformat(),
         "requested_minutes": 10,
@@ -537,9 +573,128 @@ def test_effective_kill_list_honours_break_app_allowance():
     s.start_session("x", now=T0)
     assert "discord.exe" in s.effective_kill_processes()
     s.start_break("voice call", 15, "social_media",
-                  allowed_sites=["discord"], allowed_apps=["discord"], now=T0)
+                  allowed_groups=["discord"], now=T0)
     killed = s.effective_kill_processes()
     assert "discord.exe" not in killed and "steam.exe" in killed
+
+
+def test_unified_discord_task_group_opens_web_and_spares_desktop_app():
+    """One canonical Discord choice must control both configured surfaces."""
+
+    s = make_state()
+    s.start_session(
+        "coordinate the release",
+        now=T0,
+        allowed_groups=["discord"],
+    )
+
+    assert "discord.com" not in s.effective_blocklist()
+    assert "discord.exe" not in s.effective_kill_processes()
+    assert "reddit.com" in s.effective_blocklist()
+    assert "telegram.exe" in s.effective_kill_processes()
+
+
+def test_app_only_scope_changes_do_not_dirty_or_rewrite_hosts():
+    """App-only grants, breaks, and task changes must bypass hosts reconciliation."""
+
+    s = make_state()
+    blocker = RecordingBlocker()
+    s.start_session("coordinate the release", now=T0)
+    assert s.reconcile_enforcement(blocker)
+    assert len(blocker.applied) == 1
+
+    access, reason = s.start_goal_access(
+        "Ask the release coordinator for the checksum.",
+        ["telegram"],
+        10,
+        now=T0,
+    )
+    assert access is not None and reason == ""
+    assert not s.enforcement_dirty
+    assert not s.reconcile_enforcement(blocker)
+    assert len(blocker.applied) == 1
+
+    assert s.stop_goal_access(now=T0 + timedelta(minutes=1)) is access
+    assert not s.enforcement_dirty
+    assert not s.reconcile_enforcement(blocker)
+
+    ok, reason = s.start_break(
+        "check the build client",
+        5,
+        "away",
+        allowed_groups=["steam"],
+        now=T0 + timedelta(minutes=1),
+    )
+    assert ok and reason == ""
+    assert not s.enforcement_dirty
+    assert not s.reconcile_enforcement(blocker)
+
+    assert s.stop_break(now=T0 + timedelta(minutes=2)) is not None
+    assert not s.enforcement_dirty
+    s.start_session(
+        "continue in Telegram",
+        now=T0 + timedelta(minutes=3),
+        allowed_groups=["telegram"],
+    )
+    assert not s.enforcement_dirty
+    assert len(blocker.applied) == 1
+
+
+def test_goal_app_group_suspends_for_break_and_resumes_afterward():
+    """BREAK suspends every permission in a temporary goal grant."""
+
+    s = make_state()
+    s.start_session("collect release evidence", now=T0)
+    access, reason = s.start_goal_access(
+        "Ask the release coordinator for the final checksum.",
+        ["telegram"],
+        30,
+        now=T0,
+    )
+
+    assert access is not None and reason == ""
+    assert "telegram.exe" not in s.effective_kill_processes()
+
+    ok, reason = s.start_break(
+        "make tea",
+        5,
+        "away",
+        allowed_groups=[],
+        now=T0 + timedelta(minutes=1),
+    )
+    assert ok and reason == ""
+    assert "telegram.exe" in s.effective_kill_processes()
+
+    assert s.stop_break(now=T0 + timedelta(minutes=2)) is not None
+    assert "telegram.exe" not in s.effective_kill_processes()
+
+
+def test_task_and_break_group_permissions_are_additive_and_scope_aware():
+    """Permanent task access survives a break while break access remains timed."""
+
+    s = make_state()
+    s.start_session(
+        "coordinate a launch",
+        now=T0,
+        allowed_groups=["telegram"],
+    )
+    ok, reason = s.start_break(
+        "community pause",
+        10,
+        "social_media",
+        allowed_groups=["discord"],
+        now=T0,
+    )
+
+    assert ok and reason == ""
+    assert "telegram.exe" not in s.effective_kill_processes()
+    assert "discord.exe" not in s.effective_kill_processes()
+    assert "discord.com" not in s.effective_blocklist()
+
+    assert s.stop_break(now=T0 + timedelta(minutes=1)) is not None
+    assert "telegram.exe" not in s.effective_kill_processes()
+    assert "discord.exe" in s.effective_kill_processes()
+    assert "discord.com" in s.effective_blocklist()
 
 
 def test_recent_verdicts_window_stores_observed_and_caps_at_five():
@@ -583,9 +738,14 @@ def test_status_snapshot_is_consistent_and_reports_live_enforcement():
     assert off["monitoring_pause_reason"] == "Enforcement is off."
     assert off["work_access"] == {
         "project": None,
+        "selected_groups": [],
+        "allowed_groups": [],
+        "allowed_group_labels": [],
         "selected_sites": [],
+        "selected_apps": [],
         "allowed_sites": [],
         "allowed_site_labels": [],
+        "allowed_apps": [],
     }
     assert off["enforcement"] == {
         "hosts_active": False,
@@ -613,7 +773,7 @@ def test_status_snapshot_is_consistent_and_reports_live_enforcement():
 def test_context_summary_grounds_all_the_facts():
     from datetime import timedelta
     s = make_state()
-    s.start_session("write thesis", now=T0, allowed_sites=["linkedin"])
+    s.start_session("write thesis", now=T0, allowed_groups=["linkedin"])
     s.record_verdict(False, minutes=25, observed="Reddit threads on monitor 1")
     ctx = s.context_summary(now=T0 + timedelta(minutes=40))
     assert "write thesis" in ctx                   # topic
@@ -679,8 +839,8 @@ def test_agentic_busy_pauses_productivity_monitoring():
 
 def test_persistence_round_trip():
     s = make_state()
-    s.start_session("write thesis", now=T0, allowed_sites=["twitter"])
-    s.start_break("scroll", 15, "social_media", allowed_sites=["reddit"], now=T0)
+    s.start_session("write thesis", now=T0, allowed_groups=["twitter"])
+    s.start_break("scroll", 15, "social_media", allowed_groups=["reddit"], now=T0)
     restored = make_state()
     restored.load_dict(s.to_dict())                # JSON-safe dict round trip
     # Allowance usage and topic history survive restarts (spec: cap must not
@@ -710,7 +870,7 @@ def test_goal_access_start_returns_exact_published_record():
         start_time=T0 + timedelta(minutes=1),
         end_time=T0 + timedelta(minutes=11),
         requested_minutes=10,
-        allowed_sites=("twitter",),
+        allowed_groups=("twitter",),
     )
 
 

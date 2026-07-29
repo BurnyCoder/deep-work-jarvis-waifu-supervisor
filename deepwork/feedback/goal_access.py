@@ -8,7 +8,7 @@ import queue
 import threading
 import time
 
-from deepwork.site_access import site_labels
+from deepwork.access_policy import access_labels
 from deepwork.state import GoalAccessFeedbackRequest
 
 log = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ def queue_goal_access_feedback(
 
     context = {
         "goal": access.goal,
-        "site_labels": site_labels(access.allowed_sites),
+        "group_labels": access_labels(access.allowed_groups),
         "session_context": state.context_summary(now=now),
     }
     if kind == "goal_access_start":
@@ -82,8 +82,8 @@ def _deliver_request(request, messages, speech) -> None:
 
     try:
         kwargs = dict(request.context)
-        if "site_labels" in kwargs:
-            kwargs["site_labels"] = list(kwargs["site_labels"])
+        if "group_labels" in kwargs:
+            kwargs["group_labels"] = list(kwargs["group_labels"])
         text = messages.generate(request.kind, **kwargs)
         speech.say(text)
     except Exception:

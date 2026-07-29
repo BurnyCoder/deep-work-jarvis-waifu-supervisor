@@ -137,29 +137,22 @@ class Scheduler:
     # ---------- tick bodies (called by loops AND directly by tests) ----------
 
     def _enforcer_tick(self, now: datetime | None = None) -> dict:
-        # Sweep-kill unless everything is OFF; during BREAK the state's
-        # effective list already spares explicitly allowed apps.
-        from deepwork.state import Mode
-        active = self.state.mode is not Mode.OFF
-        killed = (
-            list(self.kill_fn(self.state.effective_kill_processes()) or [])
-            if active
-            else []
-        )
-        # Expiry state, its canonical event, reconciliation, and queued speech
-        # form one ordered grant lifecycle relative to threaded Flask requests.
+        # Expiry, the process sweep, canonical events, reconciliation, and
+        # queued speech form one ordered lifecycle relative to Flask requests.
+        # Holding the lifecycle lock through kill_fn prevents a newly granted
+        # app from being killed by a target list sampled just before its grant.
         with self.state.goal_access_lifecycle():
             # Sample after lock acquisition so a blocked enforcer never checks
             # expiry against an instant from before a slow earlier transition.
             current = now if now is not None else self.now_fn()
-            result = self._finish_enforcer_tick(current, killed)
+            result = self._finish_enforcer_tick(current)
         # wake() is non-blocking in production. Even an injected slow inline
         # adapter cannot hold the lifecycle lock or delay hosts restoration.
         self.goal_access_feedback.wake()
         return result
 
-    def _finish_enforcer_tick(self, current: datetime, killed: list) -> dict:
-        """Expire/reconcile policies while the goal lifecycle lock is held."""
+    def _finish_enforcer_tick(self, current: datetime) -> dict:
+        """Expire and enforce one coherent policy under the lifecycle lock."""
 
         from deepwork.state import Mode
 
@@ -187,9 +180,9 @@ class Scheduler:
             # only event durability/feedback, never expiry reblocking.
             self._append_session_event(event, "goal-access-expiry")
             log.info(
-                "goal access expired - goal=%r allowed_sites=%s",
+                "goal access expired - goal=%r allowed_groups=%s",
                 goal_access_ended.goal,
-                list(goal_access_ended.allowed_sites),
+                list(goal_access_ended.allowed_groups),
             )
             queue_goal_access_feedback(
                 self.state,
@@ -198,6 +191,15 @@ class Scheduler:
                 now=current,
                 reason="expired",
             )
+        # Snapshot after expiry so an app becomes a target on the exact tick its
+        # grant ends. Routes cannot change the permission until this call
+        # returns because _enforcer_tick still holds the lifecycle lock.
+        active = self.state.mode is not Mode.OFF
+        killed = (
+            list(self.kill_fn(self.state.effective_kill_processes()) or [])
+            if active
+            else []
+        )
         try:
             # This is a no-op while clean; exceptions leave the dirty flag set
             # so this same periodic path retries without unconditional writes.
@@ -227,7 +229,7 @@ class Scheduler:
             return {"status": "paused"}
         context = self.state.monitoring_context()
         if self._analysis_context != context:
-            # A session, permanent-site, grant-start or grant-end transition
+            # A session, permanent-access, grant-start, or grant-end transition
             # invalidates earlier visuals before the next capture is judged.
             self.analyzer.reset()
             self._analysis_context = context
@@ -250,9 +252,9 @@ class Scheduler:
         verdict = self.analyzer.add_capture(
             path,
             topic=context.topic,
-            allowed_sites=context.permanent_sites,
+            allowed_groups=context.permanent_groups,
             goal_access_goal=context.goal_access_goal,
-            goal_access_sites=context.goal_access_sites,
+            goal_access_groups=context.goal_access_groups,
         )
         if verdict is None:                        # defensive fake/legacy support
             if (

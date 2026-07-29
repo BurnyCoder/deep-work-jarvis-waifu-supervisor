@@ -56,22 +56,22 @@ def test_build_prompt_covers_all_message_kinds():
     p = build_prompt(
         "goal_access_start",
         goal="collect the exact launch quotation",
-        site_labels="X and YouTube",
+        group_labels="Discord and Telegram",
         duration_description="for 12 minutes",
         session_context=CTX,
     )
     assert "collect the exact launch quotation" in p
-    assert "X and YouTube" in p
+    assert "Discord and Telegram" in p
     assert "for 12 minutes" in p
     p = build_prompt(
         "goal_access_end",
         goal="collect the exact launch quotation",
-        site_labels="X and YouTube",
+        group_labels="Discord and Telegram",
         end_reason="the user marked the goal complete",
         session_context=CTX,
     )
     assert "collect the exact launch quotation" in p
-    assert "X and YouTube" in p
+    assert "Discord and Telegram" in p
     assert "the user marked the goal complete" in p
 
 
@@ -90,12 +90,12 @@ def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
                         ("agent_done", {"reason": "response finished"}),
                         ("goal_access_start", {
                             "goal": "collect citations",
-                            "site_labels": "X",
+                            "group_labels": "Discord",
                             "duration_description": "until the task ends",
                         }),
                         ("goal_access_end", {
                             "goal": "collect citations",
-                            "site_labels": "X",
+                            "group_labels": "Discord",
                             "end_reason": "the timer expired",
                         })]:
         p = build_prompt(kind, session_context=CTX, **extra)
@@ -108,32 +108,32 @@ def test_all_prompts_carry_session_context_and_nudge_quotes_observed():
     assert "mention" in nudge.lower()
 
 
-def test_goal_access_prompts_preserve_full_goal_and_site_labels():
+def test_goal_access_prompts_preserve_full_goal_and_group_labels():
     # Goal text and labels are audit-sensitive user context; prompt generation
     # must preserve them verbatim rather than applying display-style shortening.
     full_goal = (
         "Fetch the complete announcement text, verify each named dependency "
         "against its linked release note, and preserve the author's caveat."
     )
-    site_labels = "X / Twitter, YouTube, Reddit, LinkedIn"
+    group_labels = "Discord, Telegram, Steam, LinkedIn"
 
     start = build_prompt(
         "goal_access_start",
         goal=full_goal,
-        site_labels=site_labels,
+        group_labels=group_labels,
         duration_description="until the current task ends",
         session_context="topic: prepare a release brief",
     )
     end = build_prompt(
         "goal_access_end",
         goal=full_goal,
-        site_labels=site_labels,
+        group_labels=group_labels,
         end_reason="automatic timer expiry",
         session_context="topic: prepare a release brief",
     )
 
     assert full_goal in start and full_goal in end
-    assert site_labels in start and site_labels in end
+    assert group_labels in start and group_labels in end
     assert "until the current task ends" in start
     assert "automatic timer expiry" in end
 
@@ -143,14 +143,14 @@ def test_goal_access_prompts_describe_exception_without_overstating_enforcement(
     start = build_prompt(
         "goal_access_start",
         goal="check the source announcement",
-        site_labels="X / Twitter and Reddit",
+        group_labels="Discord and Telegram",
         duration_description="for 10 minutes",
         session_context="topic: write a sourced brief",
     )
     end = build_prompt(
         "goal_access_end",
         goal="check the source announcement",
-        site_labels="X / Twitter and Reddit",
+        group_labels="Discord and Telegram",
         end_reason="the user marked the goal complete",
         session_context="topic: write a sourced brief",
     )
@@ -161,6 +161,13 @@ def test_goal_access_prompts_describe_exception_without_overstating_enforcement(
     assert "temporary goal-scoped exception" in end.lower()
     assert "does not claim" in end.lower()
     assert "being re-blocked" not in end.lower()
+    # Discord can permit both surfaces and Telegram is app-only, so transition
+    # speech context must not describe the unified selection as websites alone.
+    combined = f"{start}\n{end}".lower()
+    assert "website/app access" in combined
+    assert "selected access groups" in combined
+    assert "website groups" not in combined
+    assert "website access" not in combined
 
 
 def test_generator_calls_llm_and_persists_exchange(tmp_path):
@@ -199,8 +206,11 @@ def test_goal_access_feedback_queue_returns_before_slow_model_work():
 
     started, release = threading.Event(), threading.Event()
 
+    generated = []
+
     class BlockingMessages:
         def generate(self, kind, **ctx):
+            generated.append((kind, ctx))
             started.set()
             assert release.wait(timeout=2)
             return f"<{kind}>"
@@ -217,7 +227,7 @@ def test_goal_access_feedback_queue_returns_before_slow_model_work():
     state.start_session("research", now=now)
     access, reason = state.start_goal_access(
         "Fetch one source",
-        ("twitter",),
+        ("discord", "telegram"),
         5,
         now=now,
     )
@@ -240,6 +250,9 @@ def test_goal_access_feedback_queue_returns_before_slow_model_work():
     assert elapsed < 0.1
     assert started.wait(timeout=1)
     assert speech.spoken == []
+    assert generated[0][0] == "goal_access_start"
+    assert generated[0][1]["group_labels"] == ["Discord", "Telegram"]
+    assert "site_labels" not in generated[0][1]
     release.set()
     assert delivery.wait_idle(timeout=2) is True
     delivery.stop()

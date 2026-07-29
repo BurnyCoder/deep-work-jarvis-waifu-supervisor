@@ -41,17 +41,17 @@ class FakeAnalyzer:
         self,
         path,
         topic,
-        allowed_sites=(),
+        allowed_groups=(),
         goal_access_goal=None,
-        goal_access_sites=(),
+        goal_access_groups=(),
     ):
         self.captures.append(
             (
                 path,
                 topic,
-                tuple(allowed_sites),
+                tuple(allowed_groups),
                 goal_access_goal,
-                tuple(goal_access_sites),
+                tuple(goal_access_groups),
             )
         )
         return self.verdict
@@ -120,6 +120,111 @@ def test_enforcer_tick_kills_only_when_not_off(tmp_path):
     assert len(kills) == 1 and "discord.exe" in kills[0]
 
 
+def test_enforcer_kill_sweep_uses_scope_aware_access_groups(tmp_path):
+    """The scheduler must pass task, goal, and break app policy to the killer."""
+
+    sched, state, kills = make_scheduler(tmp_path)
+    state.start_session(
+        "coordinate the release",
+        now=T0,
+        allowed_groups=["telegram"],
+    )
+    state.start_goal_access(
+        "Confirm the announcement in Discord.",
+        ["discord"],
+        10,
+        now=T0,
+    )
+
+    sched._enforcer_tick(now=T0)
+
+    assert "telegram.exe" not in kills[-1]
+    assert "discord.exe" not in kills[-1]
+    assert "steam.exe" in kills[-1]
+
+    state.start_break(
+        "check the build queue",
+        5,
+        "away",
+        allowed_groups=["steam"],
+        now=T0 + timedelta(minutes=1),
+    )
+    sched._enforcer_tick(now=T0 + timedelta(minutes=1))
+
+    # Task Telegram stays spared, the goal-only Discord permission suspends,
+    # and the break-only Steam permission becomes active.
+    assert "telegram.exe" not in kills[-1]
+    assert "discord.exe" in kills[-1]
+    assert "steam.exe" not in kills[-1]
+    assert "steamwebhelper.exe" not in kills[-1]
+
+
+def test_enforcer_targets_an_app_on_the_tick_its_grant_expires(tmp_path):
+    """Expiry must update app policy before the current kill sweep snapshots it."""
+
+    sched, state, kills = make_scheduler(tmp_path)
+    state.start_session("check the build", now=T0)
+    access, reason = state.start_goal_access(
+        "Inspect the Steam build.",
+        ["steam"],
+        1,
+        now=T0,
+    )
+    assert access is not None and reason == ""
+
+    result = sched._enforcer_tick(now=T0 + timedelta(minutes=1))
+
+    assert result["goal_access_ended"] is True
+    assert "steam.exe" in kills[-1]
+    assert "steamwebhelper.exe" in kills[-1]
+
+
+def test_enforcer_serializes_kill_snapshot_against_a_new_app_grant(tmp_path):
+    """A route-style grant cannot become active during a stale kill sweep."""
+
+    sched, state, kills = make_scheduler(tmp_path)
+    state.start_session("coordinate the release", now=T0)
+    kill_started = threading.Event()
+    release_kill = threading.Event()
+    grant_finished = threading.Event()
+    grant_result = {}
+
+    def blocking_kill(targets):
+        kills.append(tuple(targets))
+        kill_started.set()
+        assert release_kill.wait(timeout=2)
+        return []
+
+    def grant_from_route_boundary():
+        with state.goal_access_lifecycle():
+            grant_result["value"] = state.start_goal_access(
+                "Ask the team in Discord.",
+                ["discord"],
+                10,
+                now=T0,
+            )
+        grant_finished.set()
+
+    sched.kill_fn = blocking_kill
+    enforcer = threading.Thread(target=lambda: sched._enforcer_tick(now=T0))
+    grant = threading.Thread(target=grant_from_route_boundary)
+    enforcer.start()
+    assert kill_started.wait(timeout=1)
+    grant.start()
+
+    grant_was_blocked = not grant_finished.wait(timeout=0.05)
+    release_kill.set()
+    enforcer.join(timeout=2)
+    grant.join(timeout=2)
+
+    assert grant_was_blocked
+    assert not enforcer.is_alive() and not grant.is_alive()
+    assert "discord.exe" in kills[-1]
+    access, reason = grant_result["value"]
+    assert access is not None and reason == ""
+    assert "discord.exe" not in state.effective_kill_processes()
+
+
 def test_enforcer_tick_restores_after_break_expiry(tmp_path):
     sched, state, _ = make_scheduler(tmp_path)
     state.start_session("t", now=T0)
@@ -153,12 +258,15 @@ def test_enforcer_expires_goal_during_break_and_applies_hosts_once(tmp_path):
     assert events == [
         {"event": "break_ended"},
         {
-            "event": "goal_access_ended",
-            "reason": "expired",
-            "goal": "fetch quote",
-            "allowed_sites": ["twitter"],
-            "allowed_site_labels": ["X / Twitter"],
-            "started_at": T0.isoformat(),
+                "event": "goal_access_ended",
+                "reason": "expired",
+                "goal": "fetch quote",
+                "allowed_groups": ["twitter"],
+                "allowed_group_labels": ["X / Twitter"],
+                "allowed_sites": ["twitter"],
+                "allowed_site_labels": ["X / Twitter"],
+                "allowed_apps": [],
+                "started_at": T0.isoformat(),
             "expires_at": (T0 + timedelta(minutes=10)).isoformat(),
             "requested_minutes": 10,
             "until_session_end": False,
@@ -170,7 +278,7 @@ def test_enforcer_expires_goal_during_break_and_applies_hosts_once(tmp_path):
             "goal_access_end",
             {
                 "goal": "fetch quote",
-                "site_labels": ["X / Twitter"],
+                "group_labels": ["X / Twitter"],
                 "end_reason": "expired",
                 "session_context": state.context_summary(
                     now=T0 + timedelta(minutes=10)
@@ -241,11 +349,13 @@ def test_enforcer_samples_wall_clock_after_waiting_for_lifecycle_lock(tmp_path):
     with state.goal_access_lifecycle():
         thread = threading.Thread(target=enforce)
         thread.start()
-        assert kill_completed.wait(timeout=1)
+        # The coherent expiry/kill snapshot now waits behind this same lock.
+        assert not kill_completed.wait(timeout=0.05)
         clock["now"] = T0 + timedelta(minutes=1)
     thread.join(timeout=2)
 
     assert not thread.is_alive()
+    assert kill_completed.is_set()
     assert result["goal_access_ended"] is True
     assert state.goal_access is None
     assert "x.com" in sched.blocker.applied[-1]
@@ -273,7 +383,7 @@ def test_capture_verdict_nudge_flows_to_speech(tmp_path):
     assert "thesis" in kwargs["session_context"]
 
 
-def test_monitor_forwards_task_allowed_sites_to_vision_and_message_context(
+def test_monitor_forwards_task_allowed_groups_to_vision_and_message_context(
     tmp_path,
 ):
     verdict = ProductivityVerdict(
@@ -285,7 +395,7 @@ def test_monitor_forwards_task_allowed_sites_to_vision_and_message_context(
     state.start_session(
         "publish campaign",
         now=T0,
-        allowed_sites=["linkedin", "twitter"],
+        allowed_groups=["linkedin", "twitter"],
     )
     sched._monitor_tick()
     assert sched.analyzer.captures[0][2] == ("twitter", "linkedin")
@@ -352,7 +462,7 @@ def test_progress_window_resets_for_every_goal_access_context_change(tmp_path):
         observed="research draft changed",
     )
     sched, state, _ = make_scheduler(tmp_path, verdict=verdict)
-    state.start_session("thesis", now=T0, allowed_sites=["linkedin"])
+    state.start_session("thesis", now=T0, allowed_groups=["linkedin"])
     sched._monitor_tick()
     assert sched.analyzer.resets == 1
 
@@ -451,7 +561,7 @@ def test_agent_watch_restores_task_specific_blocklist(tmp_path):
     state.start_session(
         "publish campaign",
         now=T0,
-        allowed_sites=["twitter"],
+        allowed_groups=["twitter"],
         agentic=True,
     )
     sched._agent_watch_tick()

@@ -50,10 +50,10 @@ _TEMPLATES = {
     "agent_done": (
         "A user's AI coding agent has just FINISHED and is waiting for their "
         "review — the monitor said: {reason!r}. Non-task websites were just "
-        "re-blocked; any websites explicitly required for the task remain "
-        "available. Write one short, upbeat spoken sentence telling them the "
-        "agent is done and it's time to come back and review its work. No "
-        "emojis, it will be read aloud."
+        "re-blocked; any website/app access groups explicitly required for "
+        "the task remain available. Write one short, upbeat spoken sentence "
+        "telling them the agent is done and it's time to come back and review "
+        "its work. No emojis, it will be read aloud."
     ),
     "break_ack": (
         "A user is taking a {minutes}-minute break for: {purpose!r}. Write one "
@@ -67,14 +67,14 @@ _TEMPLATES = {
         "encouraging them to return to their current task. No emojis, it will "
         "be read aloud."
     ),
-    # State the goal, affected sites, and transition constraint explicitly;
+    # State the goal, affected access groups, and transition constraint explicitly;
     # OpenAI's current model guidance recommends outcome-focused prompts with
     # concrete goals, relevant context, constraints, and success criteria:
     # https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices
     "goal_access_start": (
-        "A user has started a temporary goal-scoped exception for website "
-        "access for the explicit goal: {goal!r}. Its selected website groups "
-        "are: {site_labels!r}. The access duration is "
+        "A user has started a temporary goal-scoped exception for website/app "
+        "access for the explicit goal: {goal!r}. Its selected access groups "
+        "are: {group_labels!r}. The access duration is "
         "{duration_description}. Starting this exception does not imply that "
         "every selected group was blocked immediately beforehand, because "
         "another active policy may already permit one. Write one short, "
@@ -83,9 +83,9 @@ _TEMPLATES = {
         "it will be read aloud."
     ),
     "goal_access_end": (
-        "The temporary goal-scoped exception for website access for the "
-        "explicit goal {goal!r} has ended. Its selected website groups were: "
-        "{site_labels!r}. The exception ended because: {end_reason!r}. This "
+        "The temporary goal-scoped exception for website/app access for the "
+        "explicit goal {goal!r} has ended. Its selected access groups were: "
+        "{group_labels!r}. The exception ended because: {end_reason!r}. This "
         "removes only this grant's permission; it does not claim that every "
         "selected group is now blocked, because another active policy may "
         "still permit one. Write one short, supportive spoken sentence "
