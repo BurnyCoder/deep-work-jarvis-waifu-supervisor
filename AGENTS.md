@@ -67,7 +67,7 @@ Implementation details live under `deepwork/`:
 | `feedback/tts.py` | OpenAI WAV or pyttsx3 speaker behind one FIFO worker |
 | `webui/app.py` | Flask factory and state-changing session, access, break, agent, and disable routes |
 | `webui/status.py` | Composition of state and scheduler snapshots |
-| `webui/templates/`, `static/` | Status-first dashboard and safe non-overlapping polling |
+| `webui/templates/`, `static/` | Actions-first dashboard and safe non-overlapping polling |
 
 ## Behavioral invariants
 

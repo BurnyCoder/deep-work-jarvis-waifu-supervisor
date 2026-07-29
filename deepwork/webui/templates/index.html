@@ -1,4 +1,4 @@
-<!-- Deep Work control panel: a status-first, dependency-free dashboard.
+<!-- Deep Work control panel: an actions-first, dependency-free dashboard.
      Flask/Jinja renders the form shell; dashboard.js safely fills live data.
      Template docs: https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates -->
 {# One macro keeps task, goal, and break access controls structurally identical.
@@ -64,154 +64,8 @@
     </p>
 
     <main>
-      <!-- Live information comes before controls by the user's chosen hierarchy. -->
-      <section id="live-dashboard" class="dashboard-section"
-               aria-labelledby="live-dashboard-heading" data-mode="{{ mode }}">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Realtime overview</p>
-            <h2 id="live-dashboard-heading">Live session</h2>
-          </div>
-          <span id="mode-pill" class="mode-pill" data-mode="{{ mode }}">
-            {{ mode|upper }}
-          </span>
-        </div>
-
-        <article class="hero-card">
-          <div>
-            <p class="card-label">Working on</p>
-            <p id="current-topic" class="current-topic">No active topic</p>
-          </div>
-          <dl class="hero-facts">
-            <div>
-              <dt>Session time</dt>
-              <dd><time id="session-elapsed">0m</time></dd>
-            </div>
-            <div>
-              <dt>Monitoring</dt>
-              <dd id="monitoring-status">Loading…</dd>
-            </div>
-            <div>
-              <dt>Next evaluation</dt>
-              <dd id="next-evaluation">Loading…</dd>
-            </div>
-          </dl>
-        </article>
-
-        <div class="metric-grid">
-          <article class="metric-card">
-            <p class="card-label">Productive streak</p>
-            <p id="productive-streak" class="metric-value">0 min</p>
-            <p class="metric-note">Progress toward the next 30-minute praise.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="card-label">Social allowance</p>
-            <p id="social-remaining" class="metric-value">—</p>
-            <!-- Native progress supplies accessible progressbar semantics:
-                 https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/progress -->
-            <progress id="social-progress" max="120" value="0"
-                      aria-label="Social allowance remaining"></progress>
-          </article>
-
-          <article class="metric-card">
-            <p class="card-label">Evaluations</p>
-            <p id="evaluation-count" class="metric-value">0</p>
-            <p id="evaluation-summary" class="metric-note">
-              Waiting for the first evaluation.
-            </p>
-          </article>
-
-          <article class="metric-card">
-            <p class="card-label">Last synced</p>
-            <p id="last-updated" class="metric-value metric-value-small">—</p>
-            <p class="metric-note">Dashboard data refreshes every three seconds.</p>
-          </article>
-        </div>
-
-        <div class="dashboard-grid">
-          <section class="panel history-panel" aria-labelledby="history-heading">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">Current session</p>
-                <h3 id="history-heading">Productivity evaluation history</h3>
-              </div>
-              <span id="history-total" class="count-badge">0 checks</span>
-            </div>
-            <p id="history-empty" class="empty-state">
-              Your first evaluation will appear here after the monitor runs.
-            </p>
-            <ol id="evaluation-history" class="timeline"
-                aria-label="Productivity evaluations, newest first"></ol>
-          </section>
-
-          <div class="dashboard-side">
-            <section class="panel" aria-labelledby="conditions-heading">
-              <div class="panel-heading">
-                <h3 id="conditions-heading">Current conditions</h3>
-              </div>
-              <dl class="condition-list">
-                <div>
-                  <dt>Break</dt>
-                  <dd>
-                    <strong id="break-state">None</strong>
-                    <span id="break-detail">No active break.</span>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Agentic mode</dt>
-                  <dd>
-                    <strong id="agent-state">Off</strong>
-                    <span id="agent-detail">Standard focus monitoring.</span>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Task access</dt>
-                  <dd>
-                    <strong id="project-state">None</strong>
-                    <span id="project-detail">No work-required access groups allowed.</span>
-                  </dd>
-                </div>
-              </dl>
-            </section>
-
-            <section class="panel" aria-labelledby="enforcement-heading">
-              <div class="panel-heading">
-                <h3 id="enforcement-heading">Enforcement</h3>
-              </div>
-              <div class="enforcement-grid">
-                <article>
-                  <span class="operation-icon" aria-hidden="true">WEB</span>
-                  <p id="blocked-domains" class="operation-value">—</p>
-                  <p class="operation-label">domains blocked</p>
-                </article>
-                <article>
-                  <span class="operation-icon" aria-hidden="true">APP</span>
-                  <p id="watched-processes" class="operation-value">—</p>
-                  <p class="operation-label">process targets</p>
-                </article>
-              </div>
-            </section>
-
-            <section class="panel" aria-labelledby="operations-heading">
-              <div class="panel-heading">
-                <div>
-                  <p class="eyebrow">Scheduler health</p>
-                  <h3 id="operations-heading">Background operations</h3>
-                </div>
-                <span id="scheduler-state" class="count-badge">Loading</span>
-              </div>
-              <div id="runtime-loops" class="runtime-list"></div>
-            </section>
-          </div>
-        </div>
-
-        <!-- Only concise new-verdict messages are announced, preventing every
-             three-second card refresh from overwhelming screen-reader users. -->
-        <p id="dashboard-announcement" class="visually-hidden"
-           role="status" aria-live="polite"></p>
-      </section>
-
+      <!-- Controls precede live information in both source and visual order:
+           https://www.w3.org/WAI/WCAG22/Techniques/css/C27 -->
       <section id="controls" class="controls-section" aria-labelledby="controls-heading">
         <div class="section-heading">
           <div>
@@ -443,6 +297,153 @@
             </form>
           </section>
         </div>
+      </section>
+
+      <section id="live-dashboard" class="dashboard-section"
+               aria-labelledby="live-dashboard-heading" data-mode="{{ mode }}">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Realtime overview</p>
+            <h2 id="live-dashboard-heading">Live session</h2>
+          </div>
+          <span id="mode-pill" class="mode-pill" data-mode="{{ mode }}">
+            {{ mode|upper }}
+          </span>
+        </div>
+
+        <article class="hero-card">
+          <div>
+            <p class="card-label">Working on</p>
+            <p id="current-topic" class="current-topic">No active topic</p>
+          </div>
+          <dl class="hero-facts">
+            <div>
+              <dt>Session time</dt>
+              <dd><time id="session-elapsed">0m</time></dd>
+            </div>
+            <div>
+              <dt>Monitoring</dt>
+              <dd id="monitoring-status">Loading…</dd>
+            </div>
+            <div>
+              <dt>Next evaluation</dt>
+              <dd id="next-evaluation">Loading…</dd>
+            </div>
+          </dl>
+        </article>
+
+        <div class="metric-grid">
+          <article class="metric-card">
+            <p class="card-label">Productive streak</p>
+            <p id="productive-streak" class="metric-value">0 min</p>
+            <p class="metric-note">Progress toward the next 30-minute praise.</p>
+          </article>
+
+          <article class="metric-card">
+            <p class="card-label">Social allowance</p>
+            <p id="social-remaining" class="metric-value">—</p>
+            <!-- Native progress supplies accessible progressbar semantics:
+                 https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/progress -->
+            <progress id="social-progress" max="120" value="0"
+                      aria-label="Social allowance remaining"></progress>
+          </article>
+
+          <article class="metric-card">
+            <p class="card-label">Evaluations</p>
+            <p id="evaluation-count" class="metric-value">0</p>
+            <p id="evaluation-summary" class="metric-note">
+              Waiting for the first evaluation.
+            </p>
+          </article>
+
+          <article class="metric-card">
+            <p class="card-label">Last synced</p>
+            <p id="last-updated" class="metric-value metric-value-small">—</p>
+            <p class="metric-note">Dashboard data refreshes every three seconds.</p>
+          </article>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="panel history-panel" aria-labelledby="history-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Current session</p>
+                <h3 id="history-heading">Productivity evaluation history</h3>
+              </div>
+              <span id="history-total" class="count-badge">0 checks</span>
+            </div>
+            <p id="history-empty" class="empty-state">
+              Your first evaluation will appear here after the monitor runs.
+            </p>
+            <ol id="evaluation-history" class="timeline"
+                aria-label="Productivity evaluations, newest first"></ol>
+          </section>
+
+          <div class="dashboard-side">
+            <section class="panel" aria-labelledby="conditions-heading">
+              <div class="panel-heading">
+                <h3 id="conditions-heading">Current conditions</h3>
+              </div>
+              <dl class="condition-list">
+                <div>
+                  <dt>Break</dt>
+                  <dd>
+                    <strong id="break-state">None</strong>
+                    <span id="break-detail">No active break.</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Agentic mode</dt>
+                  <dd>
+                    <strong id="agent-state">Off</strong>
+                    <span id="agent-detail">Standard focus monitoring.</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Task access</dt>
+                  <dd>
+                    <strong id="project-state">None</strong>
+                    <span id="project-detail">No work-required access groups allowed.</span>
+                  </dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="panel" aria-labelledby="enforcement-heading">
+              <div class="panel-heading">
+                <h3 id="enforcement-heading">Enforcement</h3>
+              </div>
+              <div class="enforcement-grid">
+                <article>
+                  <span class="operation-icon" aria-hidden="true">WEB</span>
+                  <p id="blocked-domains" class="operation-value">—</p>
+                  <p class="operation-label">domains blocked</p>
+                </article>
+                <article>
+                  <span class="operation-icon" aria-hidden="true">APP</span>
+                  <p id="watched-processes" class="operation-value">—</p>
+                  <p class="operation-label">process targets</p>
+                </article>
+              </div>
+            </section>
+
+            <section class="panel" aria-labelledby="operations-heading">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Scheduler health</p>
+                  <h3 id="operations-heading">Background operations</h3>
+                </div>
+                <span id="scheduler-state" class="count-badge">Loading</span>
+              </div>
+              <div id="runtime-loops" class="runtime-list"></div>
+            </section>
+          </div>
+        </div>
+
+        <!-- Only concise new-verdict messages are announced, preventing every
+             three-second card refresh from overwhelming screen-reader users. -->
+        <p id="dashboard-announcement" class="visually-hidden"
+           role="status" aria-live="polite"></p>
       </section>
     </main>
   </div>
