@@ -7,7 +7,7 @@ named distraction apps, periodically captures every monitor plus camera index
 verdict, and speaks feedback. A local Flask dashboard controls the session and
 shows current state and scheduler health.
 
-<img width="910" height="1281" alt="image" src="https://github.com/user-attachments/assets/9cdf8a1e-213c-4c2b-a46e-d570744b316d" />
+<img width="898" height="1227" alt="image" src="https://github.com/user-attachments/assets/7355ca74-aafb-471e-a6ac-ad3cd8f7cd34" />
 
 <img width="603" height="1434" alt="image" src="https://github.com/user-attachments/assets/794a6de7-e3ea-48c8-9f05-20e73f67d8ff" />
 
