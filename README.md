@@ -323,7 +323,7 @@ updates, and speech remain outside the lock.
 ## Install
 
 ```powershell
-git clone https://github.com/BurnyCoder/jarvis-waifu-supervisor.git deep-work
+git clone https://github.com/BurnyCoder/deep-work-jarvis-waifu-supervisor.git deep-work
 cd deep-work
 uv sync --locked
 Copy-Item .env.example .env
