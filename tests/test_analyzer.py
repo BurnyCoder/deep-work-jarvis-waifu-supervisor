@@ -196,24 +196,28 @@ def test_request_shape_matches_responses_api(tmp_path):
     assert all("one stitched image" in t["text"] for t in texts[1:])
 
 
-def test_request_marks_task_allowed_sites_as_conditional_not_automatic_progress(
+def test_request_marks_task_access_groups_as_conditional_not_automatic_progress(
     tmp_path,
 ):
     analyzer, client, store = make_analyzer(tmp_path)
     analyzer.add_capture(
         save_named_capture(store, "01.jpg", "red"),
         topic="publish a launch update",
-        allowed_sites=("twitter", "linkedin"),
+        allowed_groups=("discord", "telegram"),
     )
     header = client.responses.last_kwargs["input"][-1]["content"][0]["text"]
-    assert "twitter, linkedin" in header
+    # Discord is one dual website/app choice and Telegram is app-only, but both
+    # use the same policy-owned label expansion in the prompt.
+    assert "Permanent task-required website/app access groups: Discord, Telegram" in header
     assert "does not automatically make the activity productive" in header
     assert "visibly serves the stated topic" in header
+    assert "allowed website or app" in header
     assert "unless" in SYSTEM_PROMPT.lower()
     assert "explicitly lists" in SYSTEM_PROMPT.lower()
+    assert "website/app access group" in SYSTEM_PROMPT.lower()
 
 
-def test_request_distinguishes_temporary_goal_access_from_permanent_task_sites(
+def test_request_distinguishes_temporary_goal_access_from_permanent_task_groups(
     tmp_path,
 ):
     analyzer, client, store = make_analyzer(tmp_path)
@@ -225,35 +229,55 @@ def test_request_distinguishes_temporary_goal_access_from_permanent_task_sites(
     analyzer.add_capture(
         save_named_capture(store, "01.jpg", "red"),
         topic="prepare the product launch brief",
-        allowed_sites=("documentation",),
+        allowed_groups=("discord",),
         goal_access_goal=full_goal,
-        goal_access_sites=("twitter", "youtube"),
+        goal_access_groups=("telegram", "steam"),
     )
 
     header = client.responses.last_kwargs["input"][-1]["content"][0]["text"]
-    assert "Permanent task-required website groups: documentation" in header
-    assert "Temporary goal-access website groups: twitter, youtube" in header
+    assert "Permanent task-required website/app access groups: Discord" in header
+    assert "Temporary goal-access website/app access groups: Telegram, Steam" in header
     assert full_goal in header
     assert "both the overall deep-work topic and the explicit temporary goal" in header
     assert "never automatically productive" in header
+    assert "allowed website or app" in header
     system_prompt = SYSTEM_PROMPT.lower()
     assert "permanently required" in system_prompt
     assert "temporary goal access" in system_prompt
     assert "both the overall topic and the explicit temporary goal" in system_prompt
 
 
-def test_request_without_goal_access_remains_backward_compatible(tmp_path):
+def test_request_without_goal_access_describes_inactive_grant(tmp_path):
     analyzer, client, store = make_analyzer(tmp_path)
 
     analyzer.add_capture(
         save_named_capture(store, "01.jpg", "red"),
         topic="write the thesis",
-        allowed_sites=("documentation",),
+        allowed_groups=("discord",),
     )
 
     header = client.responses.last_kwargs["input"][-1]["content"][0]["text"]
-    assert "Permanent task-required website groups: documentation" in header
+    assert "Permanent task-required website/app access groups: Discord" in header
     assert "No temporary goal-access grant is active" in header
+
+
+@pytest.mark.parametrize(
+    "legacy_kwargs",
+    [
+        {"allowed_sites": ("discord",)},
+        {"goal_access_sites": ("telegram",)},
+    ],
+)
+def test_request_rejects_legacy_site_only_arguments(tmp_path, legacy_kwargs):
+    """The clean-break analyzer API accepts only canonical access groups."""
+
+    analyzer, _, store = make_analyzer(tmp_path)
+    with pytest.raises(TypeError):
+        analyzer.add_capture(
+            save_named_capture(store, "01.jpg", "red"),
+            topic="write the thesis",
+            **legacy_kwargs,
+        )
 
 
 def test_request_protects_one_capture_then_compares_from_second(tmp_path):
