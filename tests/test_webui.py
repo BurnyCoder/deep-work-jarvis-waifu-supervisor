@@ -158,12 +158,12 @@ def test_index_lists_previous_topics(ui):
     assert "ml-research" in html and "X / Twitter" in html
 
 
-def test_index_uses_status_first_semantic_dashboard(ui):
+def test_index_uses_actions_first_semantic_dashboard(ui):
     client, *_ = ui
     html = client.get("/").get_data(as_text=True)
     assert 'href="/static/dashboard.css"' in html
     assert 'src="/static/dashboard.js"' in html
-    assert html.index('id="live-dashboard"') < html.index('id="controls"')
+    assert html.index('id="controls"') < html.index('id="live-dashboard"')
     assert 'id="connection-status"' in html and 'role="status"' in html
     assert 'id="evaluation-history"' in html
     assert 'id="dashboard-announcement"' in html
