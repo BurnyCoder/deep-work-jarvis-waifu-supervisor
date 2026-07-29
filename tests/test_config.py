@@ -11,11 +11,11 @@ def test_defaults_when_env_empty():
     # https://docs.pytest.org/en/stable/how-to/monkeypatch.html
     cfg = load_config({"OPENAI_API_KEY": "sk-test"})
     assert cfg.openai_api_key == "sk-test"
-    assert cfg.vision_model == "gpt-5.6-sol"
+    assert cfg.vision_model == "gpt-5.6-luna"
     assert cfg.progress_reasoning_effort == "xhigh"
-    assert cfg.agent_vision_model == "gpt-5.6-sol"
+    assert cfg.agent_vision_model == "gpt-5.6-luna"
     assert cfg.agent_reasoning_effort == "xhigh"
-    assert cfg.text_model == "gpt-5.6-sol"
+    assert cfg.text_model == "gpt-5.6-luna"
     assert cfg.text_reasoning_effort == "xhigh"
     assert cfg.capture_interval_s == 300          # 5-minute default cadence
     assert cfg.progress_window_captures == 5      # maximum comparison history

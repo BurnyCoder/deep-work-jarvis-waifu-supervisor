@@ -85,18 +85,18 @@ class Config:
     # Frozen dataclass = read-only after construction, safe to share across
     # threads without locks (https://docs.python.org/3/library/dataclasses.html).
     openai_api_key: str
-    # Every text/image Responses workload defaults to GPT-5.6 Sol at xhigh;
-    # keeping each field separate still lets .env tune one workload without
-    # silently changing the others:
-    # https://developers.openai.com/api/docs/guides/latest-model
-    vision_model: str = "gpt-5.6-sol"
+    # Every text/image Responses workload defaults to the cost-sensitive
+    # GPT-5.6 Luna tier at xhigh; keeping each field separate still lets .env
+    # tune one workload without silently changing the others:
+    # https://developers.openai.com/api/docs/models/gpt-5.6-luna
+    vision_model: str = "gpt-5.6-luna"
     progress_reasoning_effort: str = "xhigh"
-    agent_vision_model: str = "gpt-5.6-sol"
+    agent_vision_model: str = "gpt-5.6-luna"
     agent_reasoning_effort: str = "xhigh"
-    text_model: str = "gpt-5.6-sol"
+    text_model: str = "gpt-5.6-luna"
     text_reasoning_effort: str = "xhigh"
-    # Speech remains on an audio-output model because Sol outputs text only:
-    # https://developers.openai.com/api/docs/models/gpt-5.6-sol
+    # Speech remains on an audio-output model because Luna outputs text only:
+    # https://developers.openai.com/api/docs/models/gpt-5.6-luna
     tts_engine: str = "openai"               # "openai" | "pyttsx3" fallback
     tts_model: str = "gpt-4o-mini-tts"       # https://developers.openai.com/api/docs/guides/text-to-speech
     tts_voice: str = "coral"                 # one of the 13 built-in voices
