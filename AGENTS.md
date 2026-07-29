@@ -49,7 +49,7 @@ Implementation details live under `deepwork/`:
 | Module | Current responsibility |
 |---|---|
 | `config.py` | Frozen `.env`-derived `Config`; hardcoded site/app policy tables |
-| `site_access.py` | Site labels; strict task/preset key normalization; `projects.json` loading and union |
+| `access_policy.py` | Immutable 14-option website/app catalog; labels/capabilities; strict normalization; site/app projection; `projects.json` loading and task/preset union |
 | `logging_setup.py` | Timestamped UTF-8 file and terminal root logging |
 | `state.py` | Locked modes, terminal shutdown, grant lifecycle/feedback coordination, versioned monitoring context, retryable policy reconciliation, breaks, allowance, verdicts, and status |
 | `storage.py` | Capture JPEGs, LLM exchange JSON, retryable ordered session JSONL, and persisted allowance/topic state |
@@ -71,7 +71,7 @@ Implementation details live under `deepwork/`:
 
 ## Behavioral invariants
 
-- A new session replaces one-off task sites, ends any temporary goal-access
+- A new session replaces one-off task access groups, ends any temporary goal-access
   grant, and resets the latest verdict, timeline, break, streak, and agent
   state. Its next monitor tick resets the analyzer window.
 - Registered normal shutdown ends and records an active grant before serialized
@@ -116,25 +116,38 @@ Implementation details live under `deepwork/`:
   before the next capture. Recheck after capture and atomically compare again
   when recording: a transition during capture/model work must produce
   `context_changed` with no verdict state, event, or speech.
-- Task and preset site keys are strictly validated and fail before state or
-  hosts mutation. The break route trusts HTML duration/type constraints and
-  does not strictly validate CSV keys; forged negative social minutes corrupt
-  allowance accounting, while unknown keys have no policy effect.
-- Task-required sites stay monitored, spend no allowance, and never spare apps.
+- The canonical access catalog has 14 ordered groups: `reddit`, `youtube`,
+  `twitter`, `discord`, `hackernews`, `linkedin`, `bluesky`, `substack`,
+  `facebook`, `lesswrong`, `eaforum`, `4chan`, `telegram`, and `steam`.
+  Discord grants both its configured websites and desktop app from one choice;
+  Telegram and Steam are app-only; every other group is website-only.
+- Start, goal-access, and break forms share one repeated `allowed_groups`
+  checkbox contract. Strictly normalize and allowlist all values before state,
+  events, prompts, speech, hosts, or process mutation. Reject unknown keys and
+  either legacy `allowed_sites`/`allowed_apps` field with HTTP 400. The break
+  route still trusts HTML duration/type constraints; forged negative social
+  minutes can corrupt allowance accounting.
+- Task and preset groups remain active during ON and BREAK, are part of the
+  analyzer's permanent task context while monitoring is active, spend no social
+  allowance, and spare any selected app-capable processes.
 - One temporary goal-access grant may be active at a time, but a session may
   contain unlimited sequential grants. Each requires a non-empty goal, at
-  least one strictly validated site group, and either 1..240 wall-clock minutes
-  or session-end duration. It stays in ON mode, spends no social allowance,
-  does not itself pause monitoring, and never spares desktop apps.
-- BREAK preserves but suspends goal access: grant-only sites re-block, its
-  timer keeps running, and it resumes only if still active when BREAK ends.
-  Permanent task, break, or agentic policy can still permit an overlapping
-  site. Timed expiry is detected by the fixed-delay enforcer and may occur
-  during BREAK.
+  least one strictly validated access group, and either 1..240 wall-clock
+  minutes or session-end duration. It stays in ON mode, spends no social
+  allowance, does not itself pause monitoring, and can spare selected apps.
+- BREAK preserves but suspends the entire goal grant: grant-only websites
+  re-block and grant-only apps become kill targets while its timer keeps
+  running. It resumes only if still active when BREAK ends. Task groups remain
+  active and break groups apply only during that BREAK; overlapping scopes are
+  additive. Agentic policy can independently permit an overlapping website.
+  Timed expiry is detected by the fixed-delay enforcer and may occur during
+  BREAK.
 - Serialize every desired hosts policy through the state-owned reconciliation
   lock. A backend exception leaves the policy dirty, exposes
   `/status.enforcement.reconciliation_pending`, and is retried by the enforcer;
-  never let an older writer overwrite a newer transition.
+  never let an older writer overwrite a newer transition. App-only scope
+  changes advance monitoring identity and process policy without dirtying or
+  rewriting an identical hosts policy.
 - Complete goal-access events and successful enforcement precede optional
   transition message/TTS work. Start, manual stop, and expiry each enqueue one
   immutable acknowledgment context. Successful serialized reconciliation moves
@@ -155,12 +168,20 @@ Implementation details live under `deepwork/`:
 - Positive social-break minutes are reserved in full when the break starts.
   Manual stop charges each started minute and refunds the unelapsed reservation
   to the break's starting local date; natural expiry consumes the full amount.
-- Agent-busy mode empties only the website blocklist. App killing continues.
-  The productivity monitor pauses until a later watcher verdict marks the
-  agent idle.
+- Agent-busy mode empties only the website blocklist; it adds no app
+  permissions. App killing continues for processes not spared by an active
+  task/goal group, and the productivity monitor pauses until a later watcher
+  verdict marks the agent idle.
+- Each enforcer tick holds the goal-access lifecycle lock while expiring scopes,
+  taking the effective process-target snapshot, and running the kill sweep.
+  Expired apps become targets on that tick, and a concurrent route cannot grant
+  an app between target selection and termination.
 - Shared scheduler/Flask state must stay behind the existing locks.
 - `/status` must remain JSON-safe, additive, and `Cache-Control: no-store`.
-  Render model text as text, never trusted HTML.
+  Canonical group keys/labels coexist with derived site/app arrays in
+  `work_access`, `goal_access`, and `break`; equivalent event payloads retain
+  derived arrays for diagnostics and older-log readability. Render model text
+  as text, never trusted HTML.
 - The Flask server stays on `127.0.0.1`. It has no authentication or CSRF
   defense and must not be exposed as a production network service.
 
@@ -168,9 +189,12 @@ Implementation details live under `deepwork/`:
 
 - Log every complete textual prompt and semantic model output to both terminal
   and the timestamped run log; never slice or abbreviate them.
-- Temporary access goals and selected sites are complete prompt/event data;
-  log and persist them without truncation and document that model evaluation
-  uploads them with the capture context.
+- Permanent task groups, temporary access goals, and temporary website/app
+  groups are complete prompt/event data; log and persist them without
+  truncation and document that model evaluation uploads them with the capture
+  context. Allowed Discord, Telegram, or other group activity remains
+  conditionally productive only when concrete visible evidence serves the
+  topic and, for a goal grant, its explicit goal.
 - Persist each complete SDK response under `results/llm/`. For vision requests,
   persist full text plus capture-file references instead of duplicating base64
   image bytes.
@@ -198,6 +222,10 @@ Then follow these rules:
   Split files/directories only as complexity actually grows.
 - Reuse functions and policy tables; do not duplicate parsing, validation,
   prompt, status, or persistence logic.
+- Keep access-group order, labels, capability projection, strict normalization,
+  and project-preset union centralized in `access_policy.py`. All three forms
+  must continue to render the shared picker and submit repeated
+  `allowed_groups` values.
 - Use `.env` for runtime tunables, uv for dependency management and commands,
   and the repository-local `.venv`.
 - Use TDD for behavior changes. Add the failing test first, implement the
@@ -261,6 +289,13 @@ network, or model nondeterminism.
   limitation without checking current package indexes.
 - The pyttsx3 adapter constructs an engine per utterance to avoid the linked
   upstream reuse issue in `feedback/tts.py`.
+- Access is intentionally group-based rather than split by backend. An existing
+  `projects.json` preset containing `discord` now opens Discord websites and
+  spares `discord.exe`; Telegram and Steam are valid app-only preset keys. Do
+  not reintroduce separate site/app controls or silently reinterpret that key.
+- `/break` strictly validates `allowed_groups` and rejects legacy split access
+  fields, but duration and kind still rely on the dashboard's HTML constraints.
+  A forged negative social duration can still corrupt allowance accounting.
 - Browser-level DoH behavior is not uniform. Windows honors its hosts file in
   the system resolver, while software with its own resolver can bypass that
   path; keep README wording conditional.

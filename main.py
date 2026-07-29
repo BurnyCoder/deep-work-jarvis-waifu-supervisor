@@ -36,7 +36,7 @@ def build_app_objects(cfg, blocker):
     from deepwork.feedback.tts import SpeechQueue, make_speaker
     from deepwork.monitoring.analyzer import AgentActivityChecker, ProductivityAnalyzer
     from deepwork.scheduler import Scheduler
-    from deepwork.site_access import load_project_allowlists
+    from deepwork.access_policy import load_project_allowlists
     from deepwork.state import SessionState
     from deepwork.storage import ResultsStore
     from deepwork.webui.app import create_app

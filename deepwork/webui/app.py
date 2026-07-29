@@ -10,16 +10,47 @@ from datetime import datetime
 # Flask quickstart: https://flask.palletsprojects.com/en/stable/quickstart/
 from flask import Flask, jsonify, redirect, render_template, request
 
+from deepwork.access_policy import (
+    access_app_keys,
+    access_labels,
+    access_options,
+    access_site_keys,
+    normalize_access_keys,
+)
 from deepwork.feedback.goal_access import (
     InlineGoalAccessFeedback,
     queue_goal_access_feedback,
     queue_transition_feedback,
 )
-from deepwork.site_access import normalize_site_keys, site_labels, site_options
 from deepwork.state import goal_access_event
 from deepwork.webui.status import build_status_payload, empty_runtime_snapshot
 
 log = logging.getLogger(__name__)
+
+# These legacy names represented split site/app inputs. Rejecting them avoids
+# silently weakening a clean-contract request that an older caller believes
+# granted access.
+_LEGACY_ACCESS_FIELDS = frozenset({"allowed_sites", "allowed_apps"})
+
+
+def _parse_allowed_groups(form, *, required: bool = False) -> tuple[str, ...]:
+    """Validate repeated canonical checkbox values from an untrusted form."""
+
+    # Werkzeug MultiDict membership detects even an explicitly empty legacy
+    # field, giving old callers a clear migration failure instead of a no-op:
+    # https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict
+    submitted_legacy = sorted(_LEGACY_ACCESS_FIELDS.intersection(form))
+    if submitted_legacy:
+        raise ValueError(
+            "Legacy allowed_sites/allowed_apps fields are no longer accepted; "
+            "submit repeated allowed_groups values.",
+        )
+    # getlist preserves every same-name checkbox value:
+    # https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
+    groups = normalize_access_keys(form.getlist("allowed_groups"))
+    if required and not groups:
+        raise ValueError("Choose at least one access group.")
+    return groups
 
 
 def _parse_goal_access_form(form) -> tuple[str, tuple[str, ...], int | None]:
@@ -29,17 +60,13 @@ def _parse_goal_access_form(form) -> tuple[str, tuple[str, ...], int | None]:
     if not goal:
         raise ValueError("A temporary-access goal is required.")
 
-    # MultiDict.getlist is required because the site picker uses repeated
-    # checkbox names: https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
-    allowed_sites = normalize_site_keys(form.getlist("allowed_sites"))
-    if not allowed_sites:
-        raise ValueError("Choose at least one website group.")
+    allowed_groups = _parse_allowed_groups(form, required=True)
 
     duration_mode = form.get("duration_mode", "")
     if duration_mode not in {"timed", "session_end"}:
         raise ValueError("Duration mode must be timed or session_end.")
     if duration_mode == "session_end":
-        return goal, allowed_sites, None
+        return goal, allowed_groups, None
 
     raw_minutes = form.get("minutes", "").strip()
     try:
@@ -48,7 +75,7 @@ def _parse_goal_access_form(form) -> tuple[str, tuple[str, ...], int | None]:
         raise ValueError("Timed access minutes must be a whole number.") from exc
     if not 1 <= minutes <= 240:
         raise ValueError("Timed access must be between 1 and 240 minutes.")
-    return goal, allowed_sites, minutes
+    return goal, allowed_groups, minutes
 
 
 def create_app(
@@ -106,7 +133,7 @@ def create_app(
                 "%s enforcement failed; current policy is pending retry",
                 action,
             )
-            return "State changed, but website enforcement is pending retry.", 503
+            return "State changed, but hosts enforcement is pending retry.", 503
         state.mark_goal_access_feedback_policy_applied()
         # Publishing is lock-local and fast. Slow model/TTS delivery begins
         # only after the caller releases the lifecycle coordinator.
@@ -122,7 +149,7 @@ def create_app(
         projects = [
             {
                 "name": name,
-                "sites": list(site_labels(state.project_allowlists[name])),
+                "groups": list(access_labels(state.project_allowlists[name])),
             }
             for name in sorted(state.project_allowlists)
         ]
@@ -131,28 +158,30 @@ def create_app(
             topics=state.previous_topics,
             mode=state.mode.value,
             projects=projects,
-            site_options=site_options(),
+            access_options=access_options(),
             goal_access_active=state.goal_access is not None,
         )
 
     @app.post("/start")
     def start():
-        # Requirement 4/5: entering a topic starts ON mode; one-off site
-        # choices and an optional saved preset open only what the task needs.
+        # Entering a topic starts ON mode; one-off access groups and an optional
+        # saved preset permit only the websites/apps the task needs.
         form = request.form
         topic = form["topic"].strip()
         project = form.get("project") or None
-        selected_sites = form.getlist("allowed_sites")
         agentic = form.get("agentic") == "on"
+        try:
+            selected_groups = _parse_allowed_groups(form)
+        except ValueError as exc:
+            log.warning("session start refused: %s", exc)
+            return str(exc), 400
         with state.goal_access_lifecycle():
             started_at = get_now()
             try:
-                # Same-name checkbox values are retrieved with MultiDict.getlist:
-                # https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist
                 replaced_goal_access = state.start_session(
                     topic,
                     now=started_at,
-                    allowed_sites=selected_sites,
+                    allowed_groups=selected_groups,
                     project=project,
                     agentic=agentic,
                 )
@@ -165,7 +194,9 @@ def create_app(
                 # A late dashboard request cannot reverse terminal shutdown.
                 log.info("session start unavailable: %s", exc)
                 return str(exc), 503
-            allowed_sites = list(state.work_allowed_sites)
+            allowed_groups = list(state.work_allowed_groups)
+            allowed_sites = list(access_site_keys(allowed_groups))
+            allowed_apps = list(access_app_keys(allowed_groups))
             if replaced_goal_access is not None:
                 state.cancel_pending_goal_access_start(replaced_goal_access)
                 # The replacement good-luck message is sufficient spoken context.
@@ -179,8 +210,19 @@ def create_app(
                 "event": "session_start",
                 "topic": topic,
                 "project": state.active_project,
-                "selected_sites": list(state.task_allowed_sites),
+                "selected_groups": list(state.task_allowed_groups),
+                "allowed_groups": allowed_groups,
+                "allowed_group_labels": list(access_labels(allowed_groups)),
+                # Preserve derived policy arrays for auditability without
+                # making either split representation canonical.
+                "selected_sites": list(
+                    access_site_keys(state.task_allowed_groups)
+                ),
+                "selected_apps": list(
+                    access_app_keys(state.task_allowed_groups)
+                ),
                 "allowed_sites": allowed_sites,
+                "allowed_apps": allowed_apps,
                 "agentic": state.agentic_mode,
             }, "session-start")
             save_state("session-start")            # topic history survives restart
@@ -195,26 +237,28 @@ def create_app(
             if enforcement_error is not None:
                 return enforcement_error
             active_project = state.active_project
-            task_sites = list(state.task_allowed_sites)
+            task_groups = list(state.task_allowed_groups)
             active_agentic = state.agentic_mode
         goal_feedback.wake()
         log.info(
-            "session started: topic=%r project=%r selected_sites=%s "
-            "allowed_sites=%s agentic=%s",
+            "session started: topic=%r project=%r selected_groups=%s "
+            "allowed_groups=%s allowed_sites=%s allowed_apps=%s agentic=%s",
             topic,
             active_project,
-            task_sites,
+            task_groups,
+            allowed_groups,
             allowed_sites,
+            allowed_apps,
             active_agentic,
         )
         return redirect("/")
 
     @app.post("/goal-access")
     def start_goal_access():
-        """Open selected website groups for one monitored, goal-bound grant."""
+        """Permit selected website/app groups for one monitored goal."""
 
         try:
-            goal, allowed_sites, minutes = _parse_goal_access_form(request.form)
+            goal, allowed_groups, minutes = _parse_goal_access_form(request.form)
         except ValueError as exc:
             # HTML constraints are convenience only; forged requests must fail
             # before state, hosts, records, model calls, or speech can change.
@@ -226,7 +270,7 @@ def create_app(
             try:
                 access, reason = state.start_goal_access(
                     goal,
-                    allowed_sites,
+                    allowed_groups,
                     minutes,
                     now=started_at,
                 )
@@ -254,10 +298,10 @@ def create_app(
                 return enforcement_error
         goal_feedback.wake()
         log.info(
-            "goal access started: goal=%r sites=%s requested_minutes=%r "
+            "goal access started: goal=%r groups=%s requested_minutes=%r "
             "expires_at=%s",
             access.goal,
-            list(access.allowed_sites),
+            list(access.allowed_groups),
             access.requested_minutes,
             access.end_time.isoformat() if access.end_time else None,
         )
@@ -293,32 +337,50 @@ def create_app(
                 return enforcement_error
         goal_feedback.wake()
         log.info(
-            "goal access stopped: goal=%r sites=%s reason=manual",
+            "goal access stopped: goal=%r groups=%s reason=manual",
             access.goal,
-            list(access.allowed_sites),
+            list(access.allowed_groups),
         )
         return redirect("/")
 
     @app.post("/break")
     def take_break():
-        # Requirement 5: user states purpose + duration + kind; allowances are
-        # comma-separated site/app group names (e.g. "reddit,discord").
+        # The break form shares the same repeated, server-validated group
+        # contract as permanent task and temporary goal access.
         form = request.form
-        split = lambda s: [x.strip() for x in s.split(",") if x.strip()]
+        try:
+            allowed_groups = _parse_allowed_groups(form)
+        except ValueError as exc:
+            log.warning("break refused: %s", exc)
+            return str(exc), 400
+        minutes = int(form["minutes"])
+        kind = form.get("kind", "away")
         with state.goal_access_lifecycle():
-            ok, reason = state.start_break(
-                purpose=form["purpose"], minutes=int(form["minutes"]),
-                kind=form.get("kind", "away"),
-                allowed_sites=split(form.get("allowed_sites", "")),
-                allowed_apps=split(form.get("allowed_apps", "")),
-                now=get_now(),
-            )
+            try:
+                ok, reason = state.start_break(
+                    purpose=form["purpose"],
+                    minutes=minutes,
+                    kind=kind,
+                    allowed_groups=allowed_groups,
+                    now=get_now(),
+                )
+            except ValueError as exc:
+                # State remains the validation boundary for programmatic
+                # callers; preserve an explicit HTTP 400 for forged forms.
+                log.warning("break refused: %s", exc)
+                return str(exc), 400
             if not ok:                             # e.g. social cap exhausted
                 log.info("break refused: %s", reason)
                 return reason, 400
             append_session_event({
                 "event": "break_start",
-                **form.to_dict(),
+                "purpose": form["purpose"],
+                "minutes": minutes,
+                "kind": kind,
+                "allowed_groups": list(allowed_groups),
+                "allowed_group_labels": list(access_labels(allowed_groups)),
+                "allowed_sites": list(access_site_keys(allowed_groups)),
+                "allowed_apps": list(access_app_keys(allowed_groups)),
             }, "break-start")
             save_state("break-start")              # allowance survives restart
             session_context = state.context_summary()

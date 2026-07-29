@@ -79,6 +79,36 @@
       .replace(/\b\w/g, (letter) => letter.toUpperCase());
   }
 
+  function accessLabels(access) {
+    // Prefer canonical group labels and keys. The split site/app fields keep
+    // older status payloads readable during a rolling local upgrade.
+    const canonicalLabels = Array.isArray(access?.allowed_group_labels)
+      ? access.allowed_group_labels
+      : [];
+    const canonicalGroups = Array.isArray(access?.allowed_groups)
+      ? access.allowed_groups.map(titleCase)
+      : [];
+    const legacySiteLabels = Array.isArray(access?.allowed_site_labels)
+      ? access.allowed_site_labels
+      : Array.isArray(access?.allowed_sites)
+        ? access.allowed_sites.map(titleCase)
+        : [];
+    const legacyAppLabels = Array.isArray(access?.allowed_app_labels)
+      ? access.allowed_app_labels
+      : Array.isArray(access?.allowed_apps)
+        ? access.allowed_apps.map(titleCase)
+        : [];
+    const candidates = canonicalLabels.length
+      ? canonicalLabels
+      : canonicalGroups.length
+        ? canonicalGroups
+        : [...legacySiteLabels, ...legacyAppLabels];
+    // Set preserves insertion order while preventing a dual Web + App group
+    // such as Discord from appearing twice in a legacy split payload:
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set
+    return [...new Set(candidates.map(String).filter(Boolean))];
+  }
+
   function setConnection(state, label) {
     const badge = byId("connection-status");
     if (badge) {
@@ -158,26 +188,21 @@
     }
 
     const workAccess = status.work_access || {};
-    const workSites = Array.isArray(workAccess.allowed_sites)
-      ? workAccess.allowed_sites
-      : [];
-    const workSiteLabels = Array.isArray(workAccess.allowed_site_labels)
-      ? workAccess.allowed_site_labels
-      : workSites.map(titleCase);
+    const workGroupLabels = accessLabels(workAccess);
     setText(
       "project-state",
-      workSiteLabels.length ? workSiteLabels.join(", ") : "None",
+      workGroupLabels.length ? workGroupLabels.join(", ") : "None",
     );
     const presetDetail = workAccess.project
       ? `Preset: ${workAccess.project}. `
       : "";
-    let accessDetail = "No work-required websites allowed.";
-    if (workSites.length && status.mode === "off") {
+    let accessDetail = "No work-required access groups allowed.";
+    if (workGroupLabels.length && status.mode === "off") {
       accessDetail = `${presetDetail}Last session task access; enforcement is off.`;
-    } else if (workSites.length && status.mode === "break") {
-      accessDetail = `${presetDetail}Task sites remain open; monitoring is paused for the break.`;
-    } else if (workSites.length) {
-      accessDetail = `${presetDetail}Work-required websites stay open; monitoring remains active.`;
+    } else if (workGroupLabels.length && status.mode === "break") {
+      accessDetail = `${presetDetail}Task access groups remain available; monitoring is paused for the break.`;
+    } else if (workGroupLabels.length) {
+      accessDetail = `${presetDetail}Work-required access groups remain available; monitoring stays active.`;
     }
     setText(
       "project-detail",
@@ -252,7 +277,7 @@
       setText(
         "goal-access-form-state",
         reconciliationPending
-          ? "Website enforcement is retrying the latest policy automatically."
+          ? "Access enforcement is retrying the latest policy automatically."
           : status.mode === "on"
           ? "Ready for a goal-based access grant."
           : status.mode === "break"
@@ -263,9 +288,7 @@
     }
 
     hadActiveGoalAccess = true;
-    const labels = Array.isArray(access.allowed_site_labels)
-      ? access.allowed_site_labels
-      : (access.allowed_sites || []).map(titleCase);
+    const labels = accessLabels(access);
     if (stateBadge) {
       stateBadge.dataset.state = reconciliationPending
         ? "pending"
@@ -281,8 +304,8 @@
           ? "Suspended for break"
           : "Active",
     );
-    setText("goal-access-current-goal", access.goal || "Temporary website task");
-    setText("goal-access-sites", labels.length ? labels.join(", ") : "None");
+    setText("goal-access-current-goal", access.goal || "Temporary access goal");
+    setText("goal-access-groups", labels.length ? labels.join(", ") : "None");
   }
 
   function createVerdictItem(item, index, openEvidence) {
@@ -502,14 +525,10 @@
 
     if (latestStatus.break) {
       const remaining = Math.max(0, Number(latestStatus.break.remaining_s) - delta);
-      const allowances = [];
-      if (latestStatus.break.allowed_sites?.length) {
-        allowances.push(`sites: ${latestStatus.break.allowed_sites.join(", ")}`);
-      }
-      if (latestStatus.break.allowed_apps?.length) {
-        allowances.push(`apps: ${latestStatus.break.allowed_apps.join(", ")}`);
-      }
-      const allowanceText = allowances.length ? ` · ${allowances.join(" · ")}` : "";
+      const allowanceLabels = accessLabels(latestStatus.break);
+      const allowanceText = allowanceLabels.length
+        ? ` · Allowed: ${allowanceLabels.join(", ")}`
+        : "";
       setText(
         "break-detail",
         `${titleCase(latestStatus.break.kind)} · ${formatCountdown(remaining)} remaining${allowanceText}`,
@@ -519,7 +538,7 @@
     const goalAccess = latestStatus.goal_access;
     if (goalAccess) {
       const suspension = goalAccess.suspended
-        ? " · grant permission suspended during break; timer continues; other permissions may still keep a site open"
+        ? " · grant permissions suspended during break; timer continues; another access scope may still keep an option available"
         : "";
       const timing = goalAccess.until_session_end
         ? `Until this focused session ends${suspension}`
