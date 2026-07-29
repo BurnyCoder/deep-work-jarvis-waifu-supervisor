@@ -324,8 +324,11 @@ network, or model nondeterminism.
 
 ## GitHub workflow
 
-- The existing remote is `BurnyCoder/jarvis-waifu-supervisor`; do not create a
-  duplicate or change visibility without explicit authorization.
+- The canonical repository is
+  `BurnyCoder/deep-work-jarvis-waifu-supervisor`. A local `origin` may still use
+  the legacy `BurnyCoder/jarvis-waifu-supervisor` URL, which GitHub redirects;
+  do not create a duplicate or change visibility without explicit
+  authorization.
 - Start changes from `master` on `feat/<name>`.
 - Preserve unrelated user work. Stage only intended files.
 - Split genuinely independent functional units into meaningful commits; do not
