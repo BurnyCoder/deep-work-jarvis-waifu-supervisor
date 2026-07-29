@@ -269,8 +269,8 @@ network, or model nondeterminism.
 - Hosts policy is explicit, not wildcard-based. Substack author subdomains and
   other unlisted alternate domains are not covered.
 - Productivity vision uses original detail, which preserves supplied image
-  dimensions with the default GPT-5.6 model but can increase input tokens and
-  latency. `VISION_MODEL` overrides must support original detail; OpenAI
+  dimensions with the default GPT-5.6 Luna model but can increase input tokens
+  and latency. `VISION_MODEL` overrides must support original detail; OpenAI
   currently documents it for GPT-5.4 and future models. Wide composites,
   occlusion, ambiguity, and visually static work can still mislead it.
   Agent-watch vision remains low-detail and can miss small screen text. Never

@@ -46,9 +46,9 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      failure is non-fatal.
    - The images are stacked into one timestamped, labeled JPEG.
    - Productivity images are sent with `detail="original"`. With the default
-     GPT-5.6 model, this preserves the supplied dimensions so dense document,
-     code, and UI changes remain available to the model. The agent watcher
-     remains a separate low-detail workload.
+     GPT-5.6 Luna model, this preserves the supplied dimensions so dense
+     document, code, and UI changes remain available to the model. The agent
+     watcher remains a separate low-detail workload.
    - A successful capture triggers one Responses API evaluation over the newest
      one through `PROGRESS_WINDOW_CAPTURES` stitched captures, oldest first,
      provided its versioned monitoring context still matches. A transition
@@ -304,11 +304,11 @@ environment and lockfile behavior.
 | Variable | Default | Purpose |
 |---|---:|---|
 | `OPENAI_API_KEY` | none | Required API credential |
-| `VISION_MODEL` | `gpt-5.6-sol` | Rolling productivity vision model; must support original image detail |
+| `VISION_MODEL` | `gpt-5.6-luna` | Rolling productivity vision model; must support original image detail |
 | `PROGRESS_REASONING_EFFORT` | `xhigh` | Productivity-model reasoning effort |
-| `AGENT_VISION_MODEL` | `gpt-5.6-sol` | Frequent agent-activity vision model |
+| `AGENT_VISION_MODEL` | `gpt-5.6-luna` | Frequent agent-activity vision model |
 | `AGENT_REASONING_EFFORT` | `xhigh` | Agent-activity reasoning effort |
-| `TEXT_MODEL` | `gpt-5.6-sol` | Good-luck/nudge/milestone-praise message model |
+| `TEXT_MODEL` | `gpt-5.6-luna` | Good-luck/nudge/milestone-praise message model |
 | `TEXT_REASONING_EFFORT` | `xhigh` | Feedback-message reasoning effort |
 | `TTS_ENGINE` | `openai` | `openai` or `pyttsx3` playback |
 | `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
@@ -325,11 +325,12 @@ environment and lockfile behavior.
 phrase are code constants rather than `.env` settings.
 
 All Responses API text and vision calls default to
-[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol) with
-`xhigh` reasoning. These quality-first defaults can increase latency and cost,
+[GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) with
+`xhigh` reasoning. Luna is optimized for cost-sensitive, high-volume workloads,
+while `xhigh` remains quality-oriented and can increase latency and cost,
 especially for the one-minute agent watcher; each workload therefore keeps
-separate `.env` overrides. Sol produces text rather than speech, so TTS remains
-on the dedicated
+separate `.env` overrides. Luna produces text rather than speech, so TTS
+remains on the dedicated
 [GPT-4o mini TTS](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts).
 `VISION_MODEL` is the constrained override: productivity requests always use
 `detail="original"`, which OpenAI currently documents for GPT-5.4 and future
@@ -604,10 +605,10 @@ administrator access, an API call, capture hardware, or audio playback.
   processes not listed in `APP_PROCESSES`, and protected processes are outside
   the current app-killer policy.
 - **Vision judgments remain fallible:** the productivity analyzer sends
-  `detail="original"` so the default GPT-5.6 model preserves the supplied image
-  dimensions, but this does not make its verdict ground truth. Wide stitched
-  JPEGs, compression, occlusion, visually ambiguous activity, and work whose
-  progress is not observable can still produce an incorrect verdict. The
+  `detail="original"` so the default GPT-5.6 Luna model preserves the supplied
+  image dimensions, but this does not make its verdict ground truth. Wide
+  stitched JPEGs, compression, occlusion, visually ambiguous activity, and work
+  whose progress is not observable can still produce an incorrect verdict. The
   frequent agent watcher intentionally remains low-detail and can miss small
   screen text.
 - **Fixed-delay timing:** API and capture latency extend the real interval.
