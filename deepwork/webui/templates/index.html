@@ -1,6 +1,35 @@
 <!-- Deep Work control panel: a status-first, dependency-free dashboard.
      Flask/Jinja renders the form shell; dashboard.js safely fills live data.
      Template docs: https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates -->
+{# One macro keeps task, goal, and break access controls structurally identical.
+   W3C recommends fieldset/legend for related checkbox groups:
+   https://www.w3.org/WAI/tutorials/forms/grouping/ #}
+{% macro access_picker(prefix, legend, help_text, options) -%}
+  <fieldset class="access-choice-field field-wide"
+            aria-describedby="{{ prefix }}-access-help">
+    <legend>{{ legend }}</legend>
+    <p id="{{ prefix }}-access-help">{{ help_text }}</p>
+    <div class="access-choice-grid">
+      {% for option in options %}
+        <label class="access-choice"
+               for="{{ prefix }}-access-{{ option.key }}">
+          <!-- Same-name checkboxes submit one value per checked option:
+               https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/checkbox -->
+          <input id="{{ prefix }}-access-{{ option.key }}" type="checkbox"
+                 name="allowed_groups" value="{{ option.key }}">
+          <span class="access-choice-copy">
+            <span class="access-choice-label">{{ option.label }}</span>
+            <span class="access-capability"
+                  data-allows-website="{{ option.allows_website | lower }}"
+                  data-allows-app="{{ option.allows_app | lower }}">
+              {{ option.capability_label }}
+            </span>
+          </span>
+        </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+{%- endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -140,7 +169,7 @@
                   <dt>Task access</dt>
                   <dd>
                     <strong id="project-state">None</strong>
-                    <span id="project-detail">No work-required websites allowed.</span>
+                    <span id="project-detail">No work-required access groups allowed.</span>
                   </dd>
                 </div>
               </dl>
@@ -212,39 +241,26 @@
                   <option value="">No saved preset</option>
                   {% for p in projects %}
                     <option value="{{ p.name }}">
-                      {{ p.name }} — {{ p.sites | join(", ") }}
+                      {{ p.name }} — {{ p.groups | join(", ") }}
                     </option>
                   {% endfor %}
                 </select>
               </div>
 
-              <!-- Same-name checkbox controls submit repeated values, which
-                   Flask/Werkzeug reads with request.form.getlist():
-                   https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/checkbox -->
-              <fieldset class="site-choice-field field-wide">
-                <legend>Websites needed for this task</legend>
-                <p>
-                  Checked sites stay open for this focused session without using
-                  break minutes. Monitoring and feedback remain active.
-                </p>
-                <div class="site-choice-grid">
-                  {% for key, label in site_options %}
-                    <label class="site-choice" for="task-site-{{ key }}">
-                      <input id="task-site-{{ key }}" type="checkbox"
-                             name="allowed_sites" value="{{ key }}">
-                      <span>{{ label }}</span>
-                    </label>
-                  {% endfor %}
-                </div>
-              </fieldset>
+              {{ access_picker(
+                "task",
+                "Websites and apps needed for this task",
+                "Checked access groups stay available for this focused session without using break minutes. Monitoring and feedback remain active.",
+                access_options
+              ) }}
 
               <label class="checkbox-field">
                 <input type="checkbox" name="agentic">
                 <span>
                   <strong>Agentic engineering</strong>
                   <small>
-                    Open all websites while an AI coding agent works; task sites
-                    remain open when it finishes.
+                    Open all websites while an AI coding agent works; task access
+                    groups remain available when it finishes.
                   </small>
                 </span>
               </label>
@@ -261,13 +277,13 @@
             <div class="panel-heading">
               <div>
                 <p class="eyebrow">Monitored task exception</p>
-                <h3 id="goal-access-heading">Temporary goal-based website access</h3>
+                <h3 id="goal-access-heading">Temporary goal-based access</h3>
               </div>
               <span id="goal-access-state" class="count-badge"
                     data-state="idle">Ready</span>
             </div>
             <p class="control-description">
-              Open any configured website groups for a concrete task goal. Focus
+              Allow configured website or app groups for a concrete task goal. Focus
               monitoring continues, and these grants never use social allowance.
             </p>
 
@@ -297,22 +313,12 @@
                 </div>
               </div>
 
-              <fieldset class="site-choice-field field-wide">
-                <legend>Websites needed for this goal</legend>
-                <p>
-                  Choose one or more groups. Allowed sites still have to serve
-                  the stated goal to count as productive work.
-                </p>
-                <div class="site-choice-grid">
-                  {% for key, label in site_options %}
-                    <label class="site-choice" for="goal-site-{{ key }}">
-                      <input id="goal-site-{{ key }}" type="checkbox"
-                             name="allowed_sites" value="{{ key }}">
-                      <span>{{ label }}</span>
-                    </label>
-                  {% endfor %}
-                </div>
-              </fieldset>
+              {{ access_picker(
+                "goal",
+                "Websites and apps needed for this goal",
+                "Choose one or more groups. Allowed website or app activity still has to serve the stated goal to count as productive work.",
+                access_options
+              ) }}
 
               <button id="goal-access-submit" type="submit"
                       class="secondary-button field-wide">
@@ -335,8 +341,8 @@
                 </div>
                 <dl class="goal-access-facts">
                   <div>
-                    <dt>Websites</dt>
-                    <dd id="goal-access-sites">Loading…</dd>
+                    <dt>Access groups</dt>
+                    <dd id="goal-access-groups">Loading…</dd>
                   </div>
                   <div>
                     <dt>Access window</dt>
@@ -394,17 +400,12 @@
                 </select>
               </div>
 
-              <div class="field">
-                <label for="allowed-sites">Allowed site groups</label>
-                <input id="allowed-sites" name="allowed_sites"
-                       placeholder="reddit, youtube">
-              </div>
-
-              <div class="field">
-                <label for="allowed-apps">Allowed app groups</label>
-                <input id="allowed-apps" name="allowed_apps"
-                       placeholder="discord, steam">
-              </div>
+              {{ access_picker(
+                "break",
+                "Websites and apps allowed during this break",
+                "Checked access groups are available only for this break. Social-media breaks still use the reserved allowance.",
+                access_options
+              ) }}
 
               <button type="submit" class="secondary-button field-wide">
                 Start break

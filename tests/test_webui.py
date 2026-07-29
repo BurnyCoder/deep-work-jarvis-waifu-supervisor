@@ -191,7 +191,7 @@ def test_index_uses_status_first_semantic_dashboard(ui):
         html.index('aria-labelledby="agentic-heading"')
     ]
     assert all(f'value="{site}"' in goal_card for site in SITE_DOMAINS)
-    assert "<fieldset" in html and "Websites needed for this task" in html
+    assert "<fieldset" in html and "Websites and apps needed for this task" in html
     assert all(f'value="{site}"' in html for site in SITE_DOMAINS)
     assert "X / Twitter" in html and "Hacker News" in html
 
@@ -215,7 +215,7 @@ def test_dashboard_assets_implement_safe_non_overlapping_live_updates(ui):
     assert "goal-access-form" in script             # form/panel follow live grant
     assert "reconciliation_pending" in script       # failed hosts writes stay visible
     assert "Policy update pending" in script
-    assert "other permissions may still keep a site open" in script
+    assert "another access scope may still keep an option available" in script
     assert ".textContent" in script               # safe LLM text rendering
     assert ".innerHTML" not in script              # no HTML injection sink
 
@@ -235,7 +235,7 @@ def test_start_session_unblocks_selected_task_sites_only(ui):
         "/start",
         data={
             "topic": "publish launch update",
-            "allowed_sites": ["twitter", "linkedin"],
+            "allowed_groups": ["twitter", "linkedin"],
         },
     )
     assert response.status_code in (200, 302)
@@ -246,6 +246,160 @@ def test_start_session_unblocks_selected_task_sites_only(ui):
     assert state.social_minutes_remaining() == 120
 
 
+def test_start_accepts_unified_groups_and_rejects_legacy_permission_fields(ui):
+    """The clean form contract uses repeated canonical groups exclusively."""
+
+    client, state, blocker, _ = ui
+    response = client.post(
+        "/start",
+        data={
+            "topic": "coordinate the launch",
+            "allowed_groups": ["discord", "telegram"],
+        },
+    )
+
+    assert response.status_code == 302
+    assert state.work_allowed_groups == ("discord", "telegram")
+    assert "discord.com" not in blocker.applied[-1]
+    assert "discord.exe" not in state.effective_kill_processes()
+    assert "telegram.exe" not in state.effective_kill_processes()
+
+    client.post("/disable", data={"phrase": CONFIRMATION_PHRASE})
+    legacy = client.post(
+        "/start",
+        data={"topic": "legacy", "allowed_sites": ["reddit"]},
+    )
+    assert legacy.status_code == 400
+    assert state.mode is Mode.OFF
+
+
+def test_goal_and_break_routes_expand_one_discord_group_to_web_and_app(ui):
+    """Every access route applies the same dual-surface Discord semantics."""
+
+    client, state, blocker, _ = ui
+    client.post("/start", data={"topic": "prepare a community release"})
+
+    goal = client.post(
+        "/goal-access",
+        data={
+            "goal": "Confirm the announcement with the community team",
+            "allowed_groups": ["discord"],
+            "duration_mode": "timed",
+            "minutes": "10",
+        },
+    )
+    assert goal.status_code == 302
+    assert "discord.com" not in blocker.applied[-1]
+    assert "discord.exe" not in state.effective_kill_processes()
+
+    client.post("/goal-access/stop")
+    started_break = client.post(
+        "/break",
+        data={
+            "purpose": "community pause",
+            "minutes": "10",
+            "kind": "social_media",
+            "allowed_groups": ["discord"],
+        },
+    )
+    assert started_break.status_code == 302
+    assert "discord.com" not in blocker.applied[-1]
+    assert "discord.exe" not in state.effective_kill_processes()
+    break_status = client.get("/status").get_json()["break"]
+    assert break_status["allowed_groups"] == ["discord"]
+    assert break_status["allowed_sites"] == ["discord"]
+    assert break_status["allowed_apps"] == ["discord"]
+    event = session_events(client)[-1]
+    assert event["allowed_groups"] == ["discord"]
+    assert event["allowed_sites"] == ["discord"]
+    assert event["allowed_apps"] == ["discord"]
+
+
+def test_app_only_routes_do_not_rewrite_or_depend_on_hosts(tmp_path):
+    """Telegram and Steam permissions must succeed without a hosts write."""
+
+    blocker = FailOnApplyBlocker(fail_on_call=2)
+    client, state, _, _ = make_ui(tmp_path, blocker=blocker)
+    assert client.post("/start", data={"topic": "coordinate release"}).status_code == 302
+
+    goal = client.post(
+        "/goal-access",
+        data={
+            "goal": "Ask the coordinator in Telegram.",
+            "allowed_groups": ["telegram"],
+            "duration_mode": "timed",
+            "minutes": "10",
+        },
+    )
+    take_break = client.post(
+        "/break",
+        data={
+            "purpose": "check the Steam build",
+            "allowed_groups": ["steam"],
+            "kind": "away",
+            "minutes": "5",
+        },
+    )
+
+    assert goal.status_code == 302
+    assert take_break.status_code == 302
+    assert blocker.apply_calls == 1
+    assert not state.enforcement_dirty
+    assert "telegram.exe" in state.effective_kill_processes()
+    assert "steam.exe" not in state.effective_kill_processes()
+
+    assert client.post("/break/stop").status_code == 302
+    assert client.post("/goal-access/stop").status_code == 302
+    assert blocker.apply_calls == 1
+
+
+def test_goal_and_break_reject_legacy_split_access_fields_atomically(ui):
+    """Every mutating access route enforces the chosen clean wire break."""
+
+    client, state, blocker, speech = ui
+    client.post("/start", data={"topic": "research"})
+    applied_count = len(blocker.applied)
+    spoken_count = len(speech.spoken)
+    event_count = len(session_events(client))
+
+    legacy_goal = client.post(
+        "/goal-access",
+        data={
+            "goal": "legacy research",
+            "allowed_sites": ["twitter"],
+            "duration_mode": "timed",
+            "minutes": "5",
+        },
+    )
+    legacy_break = client.post(
+        "/break",
+        data={
+            "purpose": "legacy pause",
+            "minutes": "5",
+            "kind": "away",
+            "allowed_apps": ["discord"],
+        },
+    )
+    unknown_break = client.post(
+        "/break",
+        data={
+            "purpose": "forged pause",
+            "minutes": "5",
+            "kind": "away",
+            "allowed_groups": ["unknown"],
+        },
+    )
+
+    assert legacy_goal.status_code == 400
+    assert legacy_break.status_code == 400
+    assert unknown_break.status_code == 400
+    assert state.mode is Mode.ON and state.goal_access is None
+    assert state.social_minutes_remaining() == 120
+    assert len(blocker.applied) == applied_count
+    assert len(speech.spoken) == spoken_count
+    assert len(session_events(client)) == event_count
+
+
 def test_start_session_adds_project_preset_to_one_off_sites(ui):
     client, state, blocker, _ = ui
     response = client.post(
@@ -253,7 +407,7 @@ def test_start_session_adds_project_preset_to_one_off_sites(ui):
         data={
             "topic": "share model results",
             "project": "ml-research",
-            "allowed_sites": ["linkedin"],
+            "allowed_groups": ["linkedin"],
         },
     )
     assert response.status_code in (200, 302)
@@ -266,7 +420,7 @@ def test_start_rejects_forged_site_without_state_or_hosts_side_effects(ui):
     client, state, blocker, speech = ui
     response = client.post(
         "/start",
-        data={"topic": "forged", "allowed_sites": ["unknown"]},
+        data={"topic": "forged", "allowed_groups": ["unknown"]},
     )
     assert response.status_code == 400
     assert state.mode is Mode.OFF and state.topic == ""
@@ -280,15 +434,19 @@ def test_start_event_records_task_access(ui):
         data={
             "topic": "publish launch update",
             "project": "ml-research",
-            "allowed_sites": ["linkedin"],
+            "allowed_groups": ["linkedin"],
             "agentic": "on",
         },
     )
     root = client.application.config["TEST_RESULTS_ROOT"]
     event_file = next((Path(root) / "sessions").glob("*.jsonl"))
     event = json.loads(event_file.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["selected_groups"] == ["linkedin"]
     assert event["selected_sites"] == ["linkedin"]
+    assert event["selected_apps"] == []
+    assert event["allowed_groups"] == ["twitter", "linkedin"]
     assert event["allowed_sites"] == ["twitter", "linkedin"]
+    assert event["allowed_apps"] == []
     assert event["project"] == "ml-research"
     assert event["agentic"] is True
 
@@ -308,7 +466,7 @@ def test_timed_goal_access_applies_free_access_speaks_and_records(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch launch reactions for the report",
-            "allowed_sites": ["linkedin", "twitter"],
+            "allowed_groups": ["linkedin", "twitter"],
             "duration_mode": "timed",
             "minutes": "15",
         },
@@ -316,7 +474,7 @@ def test_timed_goal_access_applies_free_access_speaks_and_records(tmp_path):
 
     assert response.status_code == 302
     assert state.goal_access.goal == "Fetch launch reactions for the report"
-    assert state.goal_access.allowed_sites == ("twitter", "linkedin")
+    assert state.goal_access.allowed_groups == ("twitter", "linkedin")
     assert state.goal_access.start_time == clock["now"]
     assert state.goal_access.end_time == clock["now"] + timedelta(minutes=15)
     assert state.social_minutes_remaining(now=clock["now"]) == allowance_before
@@ -327,7 +485,7 @@ def test_timed_goal_access_applies_free_access_speaks_and_records(tmp_path):
     message_kind, message_context = messages.calls[-1]
     assert message_kind == "goal_access_start"
     assert message_context["goal"] == "Fetch launch reactions for the report"
-    assert message_context["site_labels"] == ["X / Twitter", "LinkedIn"]
+    assert message_context["group_labels"] == ["X / Twitter", "LinkedIn"]
     assert message_context["duration_description"] == "15 minutes"
     assert "session_context" in message_context
     event = session_events(client)[-1]
@@ -335,8 +493,11 @@ def test_timed_goal_access_applies_free_access_speaks_and_records(tmp_path):
         "ts": event["ts"],
         "event": "goal_access_started",
         "goal": "Fetch launch reactions for the report",
+        "allowed_groups": ["twitter", "linkedin"],
+        "allowed_group_labels": ["X / Twitter", "LinkedIn"],
         "allowed_sites": ["twitter", "linkedin"],
         "allowed_site_labels": ["X / Twitter", "LinkedIn"],
+        "allowed_apps": [],
         "started_at": "2026-07-20T09:00:00",
         "expires_at": "2026-07-20T09:15:00",
         "requested_minutes": 15,
@@ -360,8 +521,8 @@ def test_goal_access_start_uses_the_exact_atomic_return_record(
     client.post("/start", data={"topic": "research"})
     atomic_start = state.start_goal_access
 
-    def start_then_replace(goal, allowed_sites, minutes, now=None):
-        started, reason = atomic_start(goal, allowed_sites, minutes, now=now)
+    def start_then_replace(goal, allowed_groups, minutes, now=None):
+        started, reason = atomic_start(goal, allowed_groups, minutes, now=now)
         assert isinstance(started, GoalAccessInfo) and reason == ""
         state.stop_goal_access(now=now + timedelta(seconds=1))
         replacement, replacement_reason = atomic_start(
@@ -380,7 +541,7 @@ def test_goal_access_start_uses_the_exact_atomic_return_record(
         "/goal-access",
         data={
             "goal": "Original route grant",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -431,7 +592,7 @@ def test_concurrent_start_and_stop_keep_lifecycle_events_and_speech_ordered(
                 "/goal-access",
                 data={
                     "goal": "fetch source",
-                    "allowed_sites": ["twitter"],
+                    "allowed_groups": ["twitter"],
                     "duration_mode": "timed",
                     "minutes": "5",
                 },
@@ -498,7 +659,7 @@ def test_concurrent_goal_start_and_break_keep_suspension_ordered(
                 "/goal-access",
                 data={
                     "goal": "fetch source",
-                    "allowed_sites": ["twitter"],
+                    "allowed_groups": ["twitter"],
                     "duration_mode": "timed",
                     "minutes": "5",
                 },
@@ -512,8 +673,7 @@ def test_concurrent_goal_start_and_break_keep_suspension_ordered(
                     "purpose": "stretch",
                     "minutes": "1",
                     "kind": "away",
-                    "allowed_sites": "",
-                    "allowed_apps": "",
+                    "allowed_groups": [],
                 },
             ).status_code == 302
 
@@ -566,7 +726,7 @@ def test_production_worker_preserves_goal_start_before_break_ack(tmp_path):
             "/goal-access",
             data={
                 "goal": "Fetch one source",
-                "allowed_sites": ["twitter"],
+                "allowed_groups": ["twitter"],
                 "duration_mode": "timed",
                 "minutes": "5",
             },
@@ -609,7 +769,7 @@ def test_goal_access_start_hosts_failure_keeps_active_record_retryable(tmp_path)
         "/goal-access",
         data={
             "goal": "Fetch one source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -661,7 +821,7 @@ def test_goal_start_event_failure_does_not_skip_opening_and_retries(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch one source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -721,7 +881,7 @@ def test_failed_goal_access_start_is_not_spoken_after_timer_expiry(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch one source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "1",
         },
@@ -766,7 +926,7 @@ def test_failed_goal_access_start_is_not_spoken_after_session_replacement(
         "/goal-access",
         data={
             "goal": "Fetch one source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -809,7 +969,7 @@ def test_failed_goal_access_start_waits_through_break_suspension(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch one source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -863,7 +1023,7 @@ def test_slow_goal_feedback_cannot_delay_expiry_or_reblocking(tmp_path):
                 "/goal-access",
                 data={
                     "goal": "Fetch one source",
-                    "allowed_sites": ["twitter"],
+                    "allowed_groups": ["twitter"],
                     "duration_mode": "timed",
                     "minutes": "1",
                 },
@@ -929,7 +1089,7 @@ def test_goal_access_stop_hosts_failure_records_and_stays_retryable(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch one source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -992,7 +1152,7 @@ def test_route_recovery_orders_expiry_event_and_feedback_before_replacement(
         "/goal-access",
         data={
             "goal": "old timed goal",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "1",
         },
@@ -1007,7 +1167,7 @@ def test_route_recovery_orders_expiry_event_and_feedback_before_replacement(
         "/goal-access",
         data={
             "goal": "replacement goal",
-            "allowed_sites": ["reddit"],
+            "allowed_groups": ["reddit"],
             "duration_mode": "session_end",
         },
     )
@@ -1042,7 +1202,7 @@ def test_goal_access_until_session_end_has_no_expiry(ui):
         "/goal-access",
         data={
             "goal": "Use the forum as a research source",
-            "allowed_sites": ["eaforum"],
+            "allowed_groups": ["eaforum"],
             "duration_mode": "session_end",
             # Browsers may still submit the duration control; session-end mode
             # deliberately ignores that unrelated value.
@@ -1071,7 +1231,7 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
         "/goal-access",
         data={
             "goal": "Collect reactions",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "10",
         },
@@ -1080,8 +1240,11 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
     active = client.get("/status").get_json()["goal_access"]
     assert active == {
         "goal": "Collect reactions",
+        "allowed_groups": ["twitter"],
+        "allowed_group_labels": ["X / Twitter"],
         "allowed_sites": ["twitter"],
         "allowed_site_labels": ["X / Twitter"],
+        "allowed_apps": [],
         "started_at": "2026-07-20T09:00:00",
         "expires_at": "2026-07-20T09:10:00",
         "requested_minutes": 10,
@@ -1116,7 +1279,7 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
         (
             {
                 "goal": "",
-                "allowed_sites": ["twitter"],
+                "allowed_groups": ["twitter"],
                 "duration_mode": "timed",
                 "minutes": "10",
             },
@@ -1128,12 +1291,12 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
                 "duration_mode": "timed",
                 "minutes": "10",
             },
-            "website",
+            "access",
         ),
         (
             {
                 "goal": "Research",
-                "allowed_sites": ["unknown"],
+                "allowed_groups": ["unknown"],
                 "duration_mode": "timed",
                 "minutes": "10",
             },
@@ -1142,7 +1305,7 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
         (
             {
                 "goal": "Research",
-                "allowed_sites": ["twitter"],
+                "allowed_groups": ["twitter"],
                 "duration_mode": "forever",
                 "minutes": "10",
             },
@@ -1151,7 +1314,7 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
         (
             {
                 "goal": "Research",
-                "allowed_sites": ["twitter"],
+                "allowed_groups": ["twitter"],
                 "duration_mode": "timed",
                 "minutes": "",
             },
@@ -1160,7 +1323,7 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
         (
             {
                 "goal": "Research",
-                "allowed_sites": ["twitter"],
+                "allowed_groups": ["twitter"],
                 "duration_mode": "timed",
                 "minutes": "1.5",
             },
@@ -1169,7 +1332,7 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
         (
             {
                 "goal": "Research",
-                "allowed_sites": ["twitter"],
+                "allowed_groups": ["twitter"],
                 "duration_mode": "timed",
                 "minutes": "0",
             },
@@ -1178,7 +1341,7 @@ def test_status_and_hosts_show_goal_access_suspended_during_break(tmp_path):
         (
             {
                 "goal": "Research",
-                "allowed_sites": ["twitter"],
+                "allowed_groups": ["twitter"],
                 "duration_mode": "timed",
                 "minutes": "241",
             },
@@ -1214,7 +1377,7 @@ def test_goal_access_requires_an_active_on_session(ui):
         "/goal-access",
         data={
             "goal": "Fetch a citation",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -1233,7 +1396,7 @@ def test_second_goal_access_is_rejected_without_changing_the_first(ui):
         "/goal-access",
         data={
             "goal": "First source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -1247,7 +1410,7 @@ def test_second_goal_access_is_rejected_without_changing_the_first(ui):
         "/goal-access",
         data={
             "goal": "Second source",
-            "allowed_sites": ["linkedin"],
+            "allowed_groups": ["linkedin"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -1274,7 +1437,7 @@ def test_goal_access_can_repeat_after_manual_stop(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch first source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "10",
         },
@@ -1300,7 +1463,7 @@ def test_goal_access_can_repeat_after_manual_stop(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch second source",
-            "allowed_sites": ["linkedin"],
+            "allowed_groups": ["linkedin"],
             "duration_mode": "session_end",
             "minutes": "10",
         },
@@ -1308,7 +1471,7 @@ def test_goal_access_can_repeat_after_manual_stop(tmp_path):
 
     assert repeat_response.status_code == 302
     assert state.goal_access.goal == "Fetch second source"
-    assert state.goal_access.allowed_sites == ("linkedin",)
+    assert state.goal_access.allowed_groups == ("linkedin",)
     assert state.social_minutes_remaining(now=clock["now"]) == allowance_before
     assert [event["event"] for event in session_events(client)] == [
         "session_start",
@@ -1347,7 +1510,7 @@ def test_goal_access_state_changes_survive_feedback_failures(tmp_path):
         "/goal-access",
         data={
             "goal": "Fetch source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "timed",
             "minutes": "5",
         },
@@ -1374,7 +1537,7 @@ def test_replacement_session_records_goal_access_end_without_extra_end_speech(ui
         "/goal-access",
         data={
             "goal": "Fetch source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "session_end",
             "minutes": "10",
         },
@@ -1403,7 +1566,7 @@ def test_disable_records_goal_access_end_without_extra_end_speech(ui):
         "/goal-access",
         data={
             "goal": "Fetch source",
-            "allowed_sites": ["twitter"],
+            "allowed_groups": ["twitter"],
             "duration_mode": "session_end",
             "minutes": "10",
         },
@@ -1438,7 +1601,8 @@ def test_break_rejected_beyond_allowance(ui):
     client, state, *_ = ui
     client.post("/start", data={"topic": "t"})
     resp = client.post("/break", data={"purpose": "scroll", "minutes": "999",
-                                       "kind": "social_media", "allowed_sites": "reddit"})
+                                       "kind": "social_media",
+                                       "allowed_groups": ["reddit"]})
     assert resp.status_code == 400                 # cap enforced server-side
     assert state.mode is Mode.ON
 
@@ -1447,7 +1611,8 @@ def test_break_applies_allowance_and_speaks_ack(ui):
     client, state, blocker, speech = ui
     client.post("/start", data={"topic": "t"})
     resp = client.post("/break", data={"purpose": "reddit pause", "minutes": "10",
-                                       "kind": "social_media", "allowed_sites": "reddit"})
+                                       "kind": "social_media",
+                                       "allowed_groups": ["reddit"]})
     assert resp.status_code in (200, 302)
     assert state.mode is Mode.BREAK
     assert "reddit.com" not in blocker.applied[-1] # reddit freed during break
@@ -1462,7 +1627,7 @@ def test_stop_break_restores_focus_refunds_allowance_and_speaks(tmp_path):
     )
     client.post(
         "/start",
-        data={"topic": "publish update", "allowed_sites": ["twitter"]},
+        data={"topic": "publish update", "allowed_groups": ["twitter"]},
     )
     client.post(
         "/break",
@@ -1470,8 +1635,7 @@ def test_stop_break_restores_focus_refunds_allowance_and_speaks(tmp_path):
             "purpose": "reddit pause",
             "minutes": "10",
             "kind": "social_media",
-            "allowed_sites": "reddit",
-            "allowed_apps": "discord",
+            "allowed_groups": ["reddit", "discord"],
         },
     )
     assert state.social_minutes_remaining(now=clock["now"]) == 110
@@ -1547,9 +1711,14 @@ def test_status_json_shape(ui):
     assert data["evaluation_history"] == []
     assert data["work_access"] == {
         "project": None,
+        "selected_groups": [],
+        "allowed_groups": [],
+        "allowed_group_labels": [],
         "selected_sites": [],
+        "selected_apps": [],
         "allowed_sites": [],
         "allowed_site_labels": [],
+        "allowed_apps": [],
     }
     assert data["goal_access"] is None
     assert data["enforcement"]["blocked_domain_count"] > 0
@@ -1581,13 +1750,14 @@ def test_status_extends_break_with_countdown_and_allowances(ui):
         "purpose": "call",
         "minutes": "10",
         "kind": "social_media",
-        "allowed_sites": "reddit",
-        "allowed_apps": "discord",
+        "allowed_groups": ["reddit", "discord"],
     })
 
     br = client.get("/status").get_json()["break"]
     assert 0 < br["remaining_s"] <= 600
-    assert br["allowed_sites"] == ["reddit"]
+    assert br["allowed_groups"] == ["reddit", "discord"]
+    assert br["allowed_group_labels"] == ["Reddit", "Discord"]
+    assert br["allowed_sites"] == ["reddit", "discord"]
     assert br["allowed_apps"] == ["discord"]
 
 
@@ -1600,11 +1770,11 @@ def test_start_with_agentic_checkbox_enables_agentic_mode(ui):
     assert state.agentic_mode is False
 
 
-def test_agentic_toggle_route_reapplies_blocklist(ui):
+def test_agentic_toggle_route_avoids_rewriting_an_identical_blocklist(ui):
     client, state, blocker, _ = ui
     client.post("/start", data={"topic": "t"})
     n = len(blocker.applied)
     resp = client.post("/agentic", data={"enabled": "on"})
     assert resp.status_code in (200, 302)
     assert state.agentic_mode is True
-    assert len(blocker.applied) == n + 1           # blocklist re-applied
+    assert len(blocker.applied) == n               # idle policy is unchanged

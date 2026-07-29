@@ -36,9 +36,11 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - While mode is ON or BREAK, the enforcer checks every
      `KILL_INTERVAL_S` seconds and kills exact, case-insensitive process-name
      matches for Discord, Telegram, and Steam.
-   - A break can spare selected app groups. Stopping it restores the normal
-     process targets for the next enforcer tick. Task-scoped website access and
-     agentic waiting do **not** spare desktop apps.
+   - Task, temporary-goal, and break access use the same canonical groups as
+     website policy. A selected app-capable group spares its exact processes
+     while that scope is active. Discord is one dual-capability choice that
+     opens its configured websites and spares `discord.exe`; Telegram and Steam
+     are app-only choices. Agentic waiting adds no app exceptions.
 
 3. **Rolling progress evaluation**
    - On each active monitor tick, `mss` captures every physical monitor.
@@ -122,8 +124,9 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      hosts section, and monitor/app enforcement ticks do no work. A failed
      removal remains pending for a later enforcer retry.
    - **BREAK:** monitoring pauses until the timed break expires or the user
-     selects **Stop break and resume work**. Task-required sites remain open,
-     and the break can add selected site/app exceptions.
+     selects **Stop break and resume work**. Task-required access groups remain
+     active, and the break can add website/app groups that last only for that
+     break.
    - A positive social-media break submitted through the provided form reserves
      its requested minutes immediately against the local-date daily allowance
      (120 minutes by default). A positive request beyond the remaining
@@ -134,36 +137,36 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - Turning enforcement off requires the exact, case-sensitive phrase:
      `I will not stop cool deepwork session`.
 
-6. **Task-scoped website access**
-   - The Start form accepts checked site groups and an optional
-     `projects.json` preset. Their ordered, deduplicated union stays open for
-     that focused session.
-   - These sites remain monitored, do not spend social-break minutes, and do
-     not exempt desktop apps.
-   - Task and preset keys are validated server-side. Starting another session
-     resets the one-off choices.
+6. **Task-scoped website and app access**
+   - The Start form accepts checked access groups and an optional
+     `projects.json` preset. Their ordered, deduplicated union remains permitted
+     during ON and BREAK for that focused session.
+   - Website-capable groups open their configured domains; app-capable groups
+     spare their configured processes. Discord does both from one checkbox.
+   - These permissions remain part of monitored task context, do not spend
+     social-break minutes, and reset when another session starts. Task and
+     preset keys are strictly validated before state or enforcement changes.
 
 7. **Repeatable temporary goal access**
-   - During an ON session, the dashboard can open any configured website
+   - During an ON session, the dashboard can permit any configured website/app
      groups for a required subgoal. One grant may be active at a time, but
      completing or expiring it immediately permits another; there is no
      per-session count or cumulative-minute limit.
    - A grant lasts for 1–240 wall-clock minutes or until the current session
      ends. It leaves the session in ON mode, spends no social-break allowance,
-     never spares desktop apps, and does not itself pause productivity
-     monitoring.
-   - The analyzer receives the exact subgoal and temporary site groups.
-     Visiting an allowed site is productive only when the visible activity
-     serves both the session topic and the stated subgoal.
+     can spare selected apps, and does not itself pause productivity monitoring.
+   - The analyzer receives the exact subgoal and temporary access groups.
+     Allowed browsing, chat, video, or app activity is productive only when
+     visible evidence serves both the session topic and the stated subgoal.
    - Every relevant state transition changes a versioned monitoring context.
      The next monitor tick resets its rolling window; if that context changes
      during capture or model analysis, the stale verdict, event, and speech are
      discarded and the following tick starts with the new context.
-   - BREAK preserves the grant but suspends its website exceptions while the
-     timer continues. An unexpired grant resumes when the break ends; an
-     expired grant does not. Suspension removes only the grant's permission;
-     permanent task, break, or agentic policy can still keep an overlapping
-     site open.
+   - BREAK preserves the grant but suspends all of its website and app
+     permissions while the timer continues. An unexpired grant resumes when the
+     break ends; an expired grant does not. Suspension removes only the grant's
+     permissions; task or break access can still permit an overlapping group,
+     and agentic policy can still open overlapping websites.
 
 8. **Agentic engineering mode**
    - An optional watcher uses the same stitched monitor/webcam capture path and
@@ -172,8 +175,8 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      blocklist becomes empty and productivity monitoring pauses. The app killer
      continues.
    - When the watcher later observes an idle, finished, or input-waiting agent,
-     normal website restrictions return while task-required sites remain open,
-     and one transition message is spoken.
+     normal website restrictions return while task-required website groups
+     remain open, and one transition message is spoken.
    - Detection occurs on scheduled polls, not instantly, and AI classification
      can be wrong. Agentic waiting does not spend social-break allowance.
 
@@ -183,7 +186,7 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
    - The browser requests the no-cache `/status` JSON endpoint every three
      seconds, never overlaps polls, pauses polling in a hidden tab, and keeps
      the last good view during a temporary connection failure.
-   - It displays session state, permanent and temporary task access, break and
+   - It displays session state, canonical permanent/temporary/break access,
      agent state, desired enforcement counts and reconciliation state,
      current-session verdict history, and the cadence/result/error state of all
      scheduler loops.
@@ -208,10 +211,13 @@ mode selection. Domain behavior is in `deepwork/`.
 ```mermaid
 flowchart TD
     Main["main.py<br/>elevation · config · wiring · cleanup"] --> UI["Flask dashboard"]
+    Main --> Policy["access_policy.py<br/>14 groups · validation · site/app projection"]
     Main --> State["SessionState"]
     Main --> Scheduler["Scheduler"]
     Main --> Store["ResultsStore"]
 
+    UI -- "repeated allowed_groups checkboxes" --> Policy
+    Policy -- "canonical, ordered groups" --> State
     UI -- "start · start/stop goal access · start/stop break · agentic · disable" --> State
     UI -- "canonical grant events" --> Store
     UI --> GoalFeedback["pending + policy-approved + ready FIFO<br/>transition feedback"]
@@ -219,12 +225,12 @@ flowchart TD
     UI -- "GET /status" --> Status["state + RuntimeStatus snapshot"]
 
     Scheduler --> Enforcer["Enforcer loop"]
-    Enforcer --> AppKiller["psutil app killer"]
+    Enforcer -- "scope-aware target processes" --> AppKiller["psutil app killer"]
     Enforcer -- "expired break or goal access" --> State
     Enforcer -- "expiry event" --> Store
     Enforcer --> GoalFeedback
     Enforcer -- "retry latest dirty policy" --> Reconcile
-    Reconcile --> Hosts["HostsBlocker"]
+    Reconcile -- "scope-aware blocked domains" --> Hosts["HostsBlocker"]
     Reconcile -- "success" --> GoalFeedback
     GoalFeedback --> TransitionVoice["independent daemon worker<br/>ordered transition message + speech"]
 
@@ -321,8 +327,8 @@ environment and lockfile behavior.
 | `UI_PORT` | `5000` | Loopback dashboard port |
 
 `BATCH_SIZE` remains a compatibility fallback for
-`PROGRESS_WINDOW_CAPTURES`. The hosts path, website/app tables, and disable
-phrase are code constants rather than `.env` settings.
+`PROGRESS_WINDOW_CAPTURES`. The hosts path, 14-group website/app catalog, and
+disable phrase are code constants rather than `.env` settings.
 
 All Responses API text and vision calls default to
 [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) with
@@ -365,12 +371,12 @@ For a normal run:
 1. Accept the UAC prompt.
 2. Read the logged `control panel:` URL and open
    `http://127.0.0.1:<UI_PORT>`.
-3. Enter a topic, choose only task-required sites, optionally enable agentic
-   mode, and select **Start session**.
-4. When a blocked site becomes necessary, enter a concrete goal, select the
-   site groups, choose a timer or session-end duration, and start temporary
-   access. Select **Goal complete — stop access** when finished; another grant
-   can then start immediately.
+3. Enter a topic, choose only task-required website/app groups, optionally
+   enable agentic mode, and select **Start session**.
+4. When a blocked website or app becomes necessary, enter a concrete goal,
+   select its access groups, choose a timer or session-end duration, and start
+   temporary access. Select **Goal complete — stop access** when finished;
+   another grant can then start immediately.
 5. Start a timed break when needed. An active goal grant is suspended while
    the break runs and resumes only if its wall-clock timer has not expired.
 6. Use Ctrl+C for a normal shutdown so the registered cleanup can clear the
@@ -415,51 +421,98 @@ Invoke-RestMethod "http://127.0.0.1:$port/status"
 The dashboard renders LLM text with `textContent` and does not expose saved
 capture images or raw prompt files through an HTTP route.
 
-`goal_access` is additive in `/status`. It is `null` when no grant is active;
-otherwise it reports `goal`, `allowed_sites`, `allowed_site_labels`,
-`started_at`, optional `expires_at`, `requested_minutes`, `remaining_s`,
-`until_session_end`, and whether BREAK currently makes `suspended` true.
+Access data is additive in `/status`: `work_access`, `goal_access`, and `break`
+publish canonical `allowed_groups` plus `allowed_group_labels`, while retaining
+derived `allowed_sites` and `allowed_apps` arrays for enforcement diagnostics.
+`work_access.selected_groups` distinguishes one-off Start selections from its
+preset-inclusive `allowed_groups`. `goal_access` is `null` when no grant is
+active; otherwise it also reports `goal`, timing fields, and whether BREAK makes
+`suspended` true. Session-start, goal-access, and break-start JSONL events use
+the same canonical group fields and keep derived site/app arrays so older
+split-policy artifacts remain understandable.
 `enforcement.reconciliation_pending` reports whether the desired hosts policy
 still needs a successful backend write.
 
-## Task-required sites and presets
+## Unified access groups and presets
+
+The Start, temporary goal-access, and break forms render the same reusable
+14-option checkbox picker, with Web/App capability badges and one Discord
+choice. The related controls use `fieldset` and `legend` following
+[W3C form-grouping guidance](https://www.w3.org/WAI/tutorials/forms/grouping/).
+
+| Key | Dashboard label | Permission |
+|---|---|---|
+| `reddit` | Reddit | Web |
+| `youtube` | YouTube | Web |
+| `twitter` | X / Twitter | Web |
+| `discord` | Discord | Web + App |
+| `hackernews` | Hacker News | Web |
+| `linkedin` | LinkedIn | Web |
+| `bluesky` | Bluesky | Web |
+| `substack` | Substack | Web |
+| `facebook` | Facebook | Web |
+| `lesswrong` | LessWrong | Web |
+| `eaforum` | EA Forum | Web |
+| `4chan` | 4chan | Web |
+| `telegram` | Telegram | App |
+| `steam` | Steam | App |
+
+All three POST forms submit one `allowed_groups` value per checked option.
+Werkzeug's
+[`MultiDict.getlist`](https://werkzeug.palletsprojects.com/en/stable/datastructures/#werkzeug.datastructures.MultiDict.getlist)
+retains every repeated value. `/start` and `/break` allow no selection;
+`/goal-access` requires at least one group. The server allowlists, normalizes,
+deduplicates, and restores catalog order before any state, event, prompt,
+speech, hosts, or process-policy mutation, consistent with
+[OWASP server-side input-validation guidance](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html).
+Unknown `allowed_groups` values and either legacy split field,
+`allowed_sites` or `allowed_apps`, return HTTP 400 on all three routes.
+
+The scope-aware union is shared by hosts and process enforcement:
+
+- Task and preset groups are active throughout ON and BREAK.
+- Temporary goal groups are active during ON. BREAK suspends the whole grant,
+  including its app permissions, while its wall-clock timer continues.
+- Break groups are active only during that BREAK.
+- Scopes are additive. Ending one removes only its permission; another active
+  scope can continue permitting the same group.
+- App-only transitions change process targets and monitoring context without
+  rewriting an identical hosts section. Each enforcer tick applies expiry
+  before taking its process-target snapshot and serializes that sweep against
+  concurrent access routes.
 
 Create an optional `projects.json` beside `main.py`:
 
 ```json
 {
-  "ml-research": ["twitter", "linkedin"],
-  "community": ["discord", "bluesky"]
+  "ml-research": ["twitter", "linkedin", "telegram"],
+  "community": ["discord", "bluesky", "steam"]
 }
 ```
 
-Valid keys are:
-
-```text
-reddit youtube twitter discord hackernews linkedin
-bluesky substack facebook lesswrong eaforum 4chan
-```
-
 A preset is unioned with one-off Start-form selections. Invalid JSON, an
-invalid shape, an unknown preset, or an unknown task/preset site key fails
-before the session can weaken enforcement. One-off task access is intentionally
-excluded from `results/state.json`.
+invalid shape, an unknown preset, or an unknown group fails before the session
+can weaken enforcement. Presets use the same 14-key catalog, so Telegram and
+Steam are valid app-only entries. Existing presets containing `discord` now
+intentionally grant both Discord web and desktop-app access. One-off and preset
+task access are live session policy and are intentionally excluded from
+`results/state.json`.
 
 ## Temporary goal access
 
 `POST /goal-access` accepts a non-empty `goal`, repeated validated
-`allowed_sites` keys, `duration_mode` equal to `timed` or `session_end`, and a
-whole `minutes` value from 1 through 240 for timed grants. It succeeds only
+`allowed_groups` values, `duration_mode` equal to `timed` or `session_end`, and
+a whole `minutes` value from 1 through 240 for timed grants. It succeeds only
 during ON mode when no other grant is active. `POST /goal-access/stop` has no
 fields and is safe to repeat.
 
 Only the active immutable grant record is held in memory. Its start event
-contains the full goal, site keys and labels, and timing; the end event repeats
-those fields and adds its end time and reason in the session JSONL. Starting
-another session, successfully disabling state, or a normal registered shutdown
-ends and records the active grant. Restarting the Python process restores
-neither sessions nor grants; a hard termination can still skip shutdown cleanup
-and its end event.
+contains the full goal, canonical group keys and labels, derived site/app
+arrays, and timing; the end event repeats those fields and adds its end time and
+reason in the session JSONL. Starting another session, successfully disabling
+state, or a normal registered shutdown ends and records the active grant.
+Restarting the Python process restores neither sessions nor grants; a hard
+termination can still skip shutdown cleanup and its end event.
 
 Every start/manual-stop/expiry transition records its canonical event before
 hosts reconciliation. If the backend raises, a route returns HTTP 503 and the
@@ -467,9 +520,10 @@ enforcer retries. A still-relevant transition acknowledgment remains pending
 and is published once after a supporting reconciliation succeeds. Messages are
 bound to the policy revision they describe, so a failed permission transition
 superseded by a newer applied policy is discarded instead of falsely announced.
-If an unapplied grant ends through stop, expiry, replacement, Disable, or shutdown first, its
-stale start acknowledgment is cancelled rather than spoken. Published requests
-are generated by an ordered daemon worker outside the lifecycle lock.
+If an unapplied grant ends through stop, expiry, replacement, Disable, or
+shutdown first, its stale start acknowledgment is cancelled rather than spoken.
+Published requests are generated by an ordered daemon worker outside the
+lifecycle lock.
 Consequently, dashboard state describes the desired policy; check
 `enforcement.reconciliation_pending` before treating it as confirmation of the
 Windows hosts file.
@@ -482,13 +536,11 @@ close-time appends are truncated back to the prior line boundary before retry,
 preventing duplicate/corrupt rows. Hard process termination can still lose
 in-memory retries.
 
-Break exceptions use comma-separated group keys in the dashboard. The current
-break route relies on browser-side duration/type constraints and does not
-perform the strict task/preset validation. A forged request can therefore
-submit an invalid duration or kind; unknown break keys have no effect rather
-than producing an error. Use a positive duration, kind `away` or
-`social_media`, the site keys above, and app keys `discord`, `telegram`, and
-`steam`. `POST /break/stop` has no form fields and is safe to repeat after the
+`POST /break` uses the same repeated, strictly validated `allowed_groups`
+checkbox contract as Start and goal access. It still relies on browser-side
+constraints for duration and kind, so submit a positive duration and kind
+`away` or `social_media`; the remaining forged-input caveat is documented
+below. `POST /break/stop` has no form fields and is safe to repeat after the
 break has already ended. A manual social-break stop bills elapsed started
 minutes and records requested, elapsed, charged, and refunded values in the
 session JSONL event.
@@ -499,7 +551,10 @@ session JSONL event.
   through `PROGRESS_WINDOW_CAPTURES` stitched JPEGs to OpenAI. Each JPEG contains
   every monitor and, when capture succeeds, a webcam frame. An agent-watch
   request uploads one stitched JPEG. Topics, temporary access goals,
-  allowed-site context, observations, and feedback prompts are also sent.
+  permanent and temporary website/app group context, observations, and feedback
+  prompts are also sent. Analyzer prompt/exchange artifacts contain complete
+  human-readable group labels; canonical keys and labels remain complete in
+  status/events, and transition logs retain the canonical keys.
 - `TTS_ENGINE=pyttsx3` keeps audio synthesis local but does **not** make the
   rest of the application offline.
 - Captures, logs, exchange JSON, and state are ordinary unencrypted local
@@ -541,46 +596,62 @@ administrator access, an API call, capture hardware, or audio playback.
 ### Manual end-to-end checklist
 
 1. Start `uv run python main.py`, accept UAC, and open the logged dashboard URL.
-2. Start a session allowing `twitter` and `linkedin`.
-3. Inspect `C:\Windows\System32\drivers\etc\hosts`: the fenced section should
-   omit the selected groups, include an unselected domain such as `reddit.com`,
-   and contain both IPv4 and IPv6 loopback entries.
-4. Confirm an unselected hostname resolves to `127.0.0.1` or `::1`, then test
+2. Confirm Start, temporary goal access, and Break show the same 14 checkboxes:
+   exactly one Discord choice labeled **Web + App**, Telegram and Steam labeled
+   **App**, and the other 11 labeled **Web**.
+3. Start a session allowing `discord` and `telegram`. Inspect `/status`:
+   `work_access.allowed_groups` should contain both keys, `allowed_sites` only
+   `discord`, and `allowed_apps` both keys.
+4. Inspect `C:\Windows\System32\drivers\etc\hosts`: the fenced section should
+   omit Discord's configured domains, include an unselected domain such as
+   `reddit.com`, and contain both IPv4 and IPv6 loopback entries. On an
+   enforcement tick, `discord.exe` and `telegram.exe` should be spared while a
+   running configured Steam process is terminated.
+5. Confirm an unselected hostname resolves to `127.0.0.1` or `::1`, then test
    the actual browser because browser-level resolution and caches can differ.
-5. Launch Discord or Steam; an exact configured process should be terminated
-   on an enforcement tick.
-6. Start a timed temporary grant for `reddit` with a concrete goal. Confirm
-   Reddit opens, monitoring stays active, desktop apps remain targeted, social
-   allowance is unchanged, and `/status.goal_access` counts down. Complete it,
-   start another grant immediately, and confirm both cycles have independent
-   start/end events and spoken acknowledgments.
-7. Start a temporary grant, then start a break. Confirm a grant-only site
-   re-blocks during BREAK, an overlapping task/break-permitted site remains
-   open, the wall-clock countdown continues, and the grant resumes only when
-   the break ends before expiry.
-8. Start a ten-minute social break allowing `reddit`; confirm the full
-   reservation is deducted immediately and monitoring pauses. Stop it after a
+6. Submit an unknown `allowed_groups` value and each legacy field
+   (`allowed_sites`, `allowed_apps`) to Start, goal-access, and break routes.
+   Confirm each returns HTTP 400 without changing state, events, hosts policy,
+   process targets, or speech.
+7. Start a timed temporary grant for `reddit` and `steam` with a concrete goal.
+   Confirm Reddit opens, Steam is spared, monitoring stays active, social
+   allowance is unchanged, and `/status.goal_access` reports canonical groups,
+   derived site/app arrays, and a countdown. Complete it, start another grant
+   immediately, and confirm both cycles have independent start/end events and
+   spoken acknowledgments.
+8. Start that temporary grant again, then start a break allowing `linkedin`.
+   Confirm grant-only Reddit re-blocks and Steam becomes targeted during BREAK,
+   task-scoped Discord and Telegram remain permitted, break-only LinkedIn opens,
+   and the grant's wall-clock countdown continues. End the break before expiry
+   and confirm LinkedIn re-blocks while the grant's Reddit and Steam permissions
+   resume.
+9. Complete the grant, then start a ten-minute social break allowing `reddit`
+   and `discord`; confirm the full reservation is deducted immediately and
+   monitoring pauses. Stop it after a
    few seconds; confirm one minute remains charged, the other nine are
-   refunded, `reddit` is re-blocked, monitoring resumes, and a return-to-work
-   message is spoken. Also let a later one-minute break expire and confirm its
-   full reservation remains charged.
-9. Submit a wrong disable phrase and confirm HTTP 403/state remains ON; submit
+   refunded, its break-only permissions disappear, the task's Discord
+   permission remains, monitoring resumes, and a return-to-work message is
+   spoken. Also let a later one-minute break expire and confirm its full
+   reservation remains charged.
+10. Submit a wrong disable phrase and confirm HTTP 403/state remains ON; submit
    the exact phrase and confirm the fenced hosts section is removed.
-10. Run `uv run python main.py --smoke` and inspect the newest files under
+11. Run `uv run python main.py --smoke` and inspect the newest files under
     `logs/`, `results/captures/`, `results/llm/`, and `results/sessions/`.
-11. Verify that the stored prompt describes permanent and temporary task sites
-    conditionally and includes the complete temporary goal. For a productive
-    result, confirm its reason includes a natural affirmation grounded in
-    concrete evidence, does not invent change over time from the single
-    capture, and matches the recorded and spoken line. A smoke run contains only
-    one productivity capture and cannot verify chronological comparison.
-12. Keep a normal session in one unchanged monitoring context through at least
+12. Verify that the stored prompt describes permanent and temporary
+    website/app groups conditionally and includes every selected group plus the
+    complete temporary goal. Discord or Telegram activity must not be treated as
+    productive merely because it is allowed. For a productive result, confirm
+    its reason includes a natural affirmation grounded in concrete evidence,
+    does not invent change over time from the single capture, and matches the
+    recorded and spoken line. A smoke run contains only one productivity capture
+    and cannot verify chronological comparison.
+13. Keep a normal session in one unchanged monitoring context through at least
     two successful productivity ticks. Inspect the second stored productivity
     exchange: with the default window it should identify `COMPARISON (2/5)`,
     contain two oldest-first image references with `detail="original"`, and
     compare corresponding panels using evidence appropriate to the stated task
     rather than waiting for a five-capture window.
-13. With a fake blocker that fails once, verify the mutating route returns 503,
+14. With a fake blocker that fails once, verify the mutating route returns 503,
     `/status.enforcement.reconciliation_pending` becomes true, and a later
     enforcer tick writes only the newest desired policy and clears the flag.
 
@@ -590,9 +661,9 @@ administrator access, an API call, capture hardware, or audio playback.
   Unlisted subdomains, alternate domains, direct IP access, proxies, VPNs, or
   application-specific resolvers can bypass or partially defeat blocking.
   For Substack, this project covers `substack.com` and `www.substack.com`, not
-  arbitrary author subdomains. Temporary goal access likewise opens whole
-  configured hostname groups; it cannot technically confine browsing to the
-  written goal or a particular post.
+  arbitrary author subdomains. Any website-capable access group likewise opens
+  its whole configured hostname set; it cannot technically confine browsing to
+  the written task/goal or a particular post.
 - **DoH behavior varies by resolver:** Microsoft's
   [Windows resolver documentation](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues)
   says the DNS client checks its cache and hosts file before querying DNS, but
@@ -603,7 +674,9 @@ administrator access, an API call, capture hardware, or audio playback.
   cache rather than assuming every browser behaves alike.
 - **Process names are finite:** renamed executables, web versions, helper
   processes not listed in `APP_PROCESSES`, and protected processes are outside
-  the current app-killer policy.
+  the current app-killer policy. Discord is deliberately one cross-surface
+  permission: selecting it in any active scope both opens its configured
+  websites and spares `discord.exe`.
 - **Vision judgments remain fallible:** the productivity analyzer sends
   `detail="original"` so the default GPT-5.6 Luna model preserves the supplied
   image dimensions, but this does not make its verdict ground truth. Wide
@@ -628,9 +701,10 @@ administrator access, an API call, capture hardware, or audio playback.
   transition speech waits behind those lines, but hard termination before a
   successful retry can still lose the in-memory event and acknowledgment.
 - **Break validation is incomplete:** HTML constrains normal form input, but
-  `/break` does not validate the duration range, kind, or exception keys
-  server-side. In particular, a forged negative social duration can corrupt
-  allowance accounting. Keep the panel loopback-only and treat server-side
+  `/break` still does not validate the duration range or kind server-side.
+  Access-group keys are now strictly allowlisted and legacy split fields return
+  HTTP 400, but a forged negative social duration can still corrupt allowance
+  accounting. Keep the panel loopback-only and treat complete server-side break
   validation as required follow-up work.
 - **Cleanup is best-effort:** Python
   [`atexit`](https://docs.python.org/3.13/library/atexit.html) handlers do not
