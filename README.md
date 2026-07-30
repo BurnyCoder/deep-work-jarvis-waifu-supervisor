@@ -81,6 +81,15 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      not justify an invented static-work exception. Timestamps, clocks, cursors,
      animations, webcam lighting, minor posture changes, and unrelated visible
      changes do not establish progress.
+   - A music video may occupy only a secondary part of a monitor as neutral,
+     work-supporting background media. It does not establish productivity:
+     capture one still requires genuine task-aligned engagement, and from
+     capture two onward the remaining work area must show meaningful
+     task-relevant progress. Changing video frames, animation, playback bars,
+     timestamps, titles, and other playback changes never count as progress. If
+     the work stalls or the video becomes the primary activity, the ordinary
+     video and access rules apply. This evaluator exception does not unblock a
+     website or grant an access group.
    - With the defaults, comparison begins on the second retained same-context
      capture, while the fifth is the first maximum-length five-capture window.
      Its nominal oldest-to-newest span is at least about 20 minutes and the
