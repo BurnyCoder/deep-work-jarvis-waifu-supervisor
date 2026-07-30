@@ -139,15 +139,13 @@ def test_productive_reason_prompt_requests_creative_grounded_encouragement():
     assert "naming the concrete evidence for the verdict" in prompt
 
 
-def make_analyzer(tmp_path, verdict=None, window_size=5,
-                  reasoning_effort="xhigh"):
+def make_analyzer(tmp_path, verdict=None, window_size=5):
     verdict = verdict or ProductivityVerdict(productive=True, reason="deep in code",
                                              observed="IDE with tests running")
     client = FakeClient(verdict)
     store = ResultsStore(tmp_path)
     analyzer = ProductivityAnalyzer(client=client, model="test-model",
-                                    store=store, window_size=window_size,
-                                    reasoning_effort=reasoning_effort)
+                                    store=store, window_size=window_size)
     return analyzer, client, store
 
 
@@ -195,7 +193,7 @@ def test_request_shape_matches_responses_api(tmp_path):
     analyzer.add_capture(save_named_capture(store, "02.jpg", "blue"), topic="thesis")
     kwargs = client.responses.last_kwargs
     assert kwargs["model"] == "test-model"
-    assert kwargs["reasoning"] == {"effort": "xhigh"}
+    assert kwargs["reasoning"] == {"effort": "medium"}
     assert kwargs["text_format"] is ProductivityVerdict
     user_content = kwargs["input"][-1]["content"]
     images = [c for c in user_content if c["type"] == "input_image"]
@@ -367,14 +365,13 @@ def test_agent_activity_checker_request_shape_and_persistence(tmp_path):
         client=client,
         model="test-model",
         store=store,
-        reasoning_effort="xhigh",
     )
 
     result = checker.check(save_capture(store))
     assert result.agent_working is True
     kwargs = client.responses.last_kwargs
     assert kwargs["model"] == "test-model"
-    assert kwargs["reasoning"] == {"effort": "xhigh"}
+    assert kwargs["reasoning"] == {"effort": "medium"}
     assert kwargs["text_format"] is AgentActivityVerdict
     user_content = kwargs["input"][-1]["content"]
     images = [c for c in user_content if c["type"] == "input_image"]
