@@ -30,6 +30,8 @@ AGENT_IMAGE_DETAIL = "low"
 
 # System prompt: sets the judging persona; ordinary productive reasons are
 # spoken without another text-model pass, so their acknowledgment belongs here.
+# The music-video exception keeps secondary background media neutral while the
+# independent work evidence remains responsible for every productive verdict.
 # Concrete writing choices are more reliable than broad tone labels:
 # https://developers.openai.com/api/docs/guides/model-guidance?model=gpt-5.6#prompting-best-practices
 SYSTEM_PROMPT = (
@@ -70,7 +72,17 @@ SYSTEM_PROMPT = (
     "stated overall topic, or as temporary goal access, with visible activity "
     "that serves both the overall topic and the explicit temporary goal. "
     "Merely seeing any allowed website or app never proves productivity; unrelated "
-    "feeds, chats, videos, and games remain unproductive. When productive is true, "
+    "feeds, chats, videos, and games remain unproductive. A music video occupying "
+    "only a secondary part of a monitor may be neutral work-supporting background "
+    "media: do not mark it off-track when the remaining work area shows genuine "
+    "task-aligned engagement and, with two or more captures, meaningful "
+    "task-relevant progress. Never count changing video frames, animation, "
+    "playback bars, timestamps, titles, or other playback changes as progress. "
+    "On one capture, treat the music video as neutral and apply the current-"
+    "engagement rule without claiming progress. If the work area is stalled or "
+    "lacks task-aligned evidence, or the video is the primary activity, this "
+    "exception does not apply; use the ordinary video and access rules. When "
+    "productive is true, "
     "integrate a brief, natural affirmation tied to the observed work into the "
     "reason, in the spirit of 'Good job' (for example, 'Nice work' or 'Great "
     "focus'); vary the wording rather than using a fixed catchphrase. For "

@@ -110,6 +110,14 @@ Implementation details live under `deepwork/`:
   changes, timestamps, clocks, cursors, animations, webcam lighting, and minor
   posture changes do not establish progress. Do not invent a static-work
   exception for a vague task.
+- A music video occupying only a secondary part of a monitor is neutral
+  work-supporting background media, not evidence of productivity. Capture one
+  still uses the current-engagement rule; from capture two onward, the remaining
+  work area must show meaningful task-relevant progress for this exception to
+  apply. Video frames, animation, playback bars, timestamps, titles, and other
+  playback changes never count as progress. If work stalls or the video becomes
+  the primary activity, use the ordinary video and access rules. This prompt
+  exception grants no website or app access.
 - The analyzer prompt requires every productive reason to integrate a brief
   affirmation tied to concrete task-aligned evidence and asks the model to vary
   the wording naturally. A single capture may praise current engagement but
