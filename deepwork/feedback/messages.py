@@ -110,7 +110,7 @@ class MessageGenerator:
         client,
         model: str,
         store: ResultsStore,
-        reasoning_effort: str = "xhigh",
+        reasoning_effort: str = "medium",
     ):
         self.client = client                      # openai.OpenAI or test fake
         self.model = model
