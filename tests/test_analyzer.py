@@ -85,6 +85,34 @@ def test_prompt_requires_task_aware_meaningful_snapshot_comparison():
     assert "why that evidence is or is not adequate for the stated task" in prompt
 
 
+def test_prompt_treats_partial_music_video_as_neutral_only_beside_real_work():
+    """A background music video cannot excuse missing or stalled task progress."""
+
+    prompt = SYSTEM_PROMPT.lower()
+    # A secondary music video is tolerated only beside evidence that independently
+    # satisfies the existing single-capture engagement or rolling-progress rules.
+    assert "music video occupying only a secondary part of a monitor" in prompt
+    assert (
+        "remaining work area shows genuine task-aligned engagement"
+    ) in prompt
+    assert (
+        "with two or more captures, meaningful task-relevant progress"
+    ) in prompt
+    # Playback changes are animation, not evidence that the user's work advanced.
+    assert (
+        "never count changing video frames, animation, playback bars, timestamps, "
+        "titles"
+    ) in prompt
+    # Capture one must keep the established engagement-only behavior because it
+    # has no earlier image from which progress could be inferred.
+    assert "on one capture, treat the music video as neutral" in prompt
+    assert "without claiming progress" in prompt
+    # The narrow exception ends when background media replaces or outlasts work.
+    assert "work area is stalled or lacks task-aligned evidence" in prompt
+    assert "video is the primary activity" in prompt
+    assert "ordinary video and access rules" in prompt
+
+
 def test_productive_reason_prompt_requests_creative_grounded_encouragement():
     # Positive speech should celebrate the specific visible work without
     # turning "Good job" into one repetitive canned prefix on every check.
