@@ -86,15 +86,15 @@ class Config:
     # threads without locks (https://docs.python.org/3/library/dataclasses.html).
     openai_api_key: str
     # Every text/image Responses workload defaults to the cost-sensitive
-    # GPT-5.6 Luna tier at xhigh; keeping each field separate still lets .env
-    # tune one workload without silently changing the others:
-    # https://developers.openai.com/api/docs/models/gpt-5.6-luna
+    # GPT-5.6 Luna tier at medium, OpenAI's balanced starting point; keeping
+    # each field separate still lets .env tune one workload independently:
+    # https://developers.openai.com/api/docs/guides/latest-model#update-api-and-model-parameters
     vision_model: str = "gpt-5.6-luna"
-    progress_reasoning_effort: str = "xhigh"
+    progress_reasoning_effort: str = "medium"
     agent_vision_model: str = "gpt-5.6-luna"
-    agent_reasoning_effort: str = "xhigh"
+    agent_reasoning_effort: str = "medium"
     text_model: str = "gpt-5.6-luna"
-    text_reasoning_effort: str = "xhigh"
+    text_reasoning_effort: str = "medium"
     # Speech remains on an audio-output model because Luna outputs text only:
     # https://developers.openai.com/api/docs/models/gpt-5.6-luna
     tts_engine: str = "openai"               # "openai" | "pyttsx3" fallback

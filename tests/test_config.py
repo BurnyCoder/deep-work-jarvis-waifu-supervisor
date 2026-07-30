@@ -12,11 +12,11 @@ def test_defaults_when_env_empty():
     cfg = load_config({"OPENAI_API_KEY": "sk-test"})
     assert cfg.openai_api_key == "sk-test"
     assert cfg.vision_model == "gpt-5.6-luna"
-    assert cfg.progress_reasoning_effort == "xhigh"
+    assert cfg.progress_reasoning_effort == "medium"
     assert cfg.agent_vision_model == "gpt-5.6-luna"
-    assert cfg.agent_reasoning_effort == "xhigh"
+    assert cfg.agent_reasoning_effort == "medium"
     assert cfg.text_model == "gpt-5.6-luna"
-    assert cfg.text_reasoning_effort == "xhigh"
+    assert cfg.text_reasoning_effort == "medium"
     assert cfg.capture_interval_s == 300          # 5-minute default cadence
     assert cfg.progress_window_captures == 5      # maximum comparison history
     assert cfg.kill_interval_s == 3               # app-kill sweep period

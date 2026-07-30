@@ -139,7 +139,7 @@ class AgentActivityChecker:
         client,
         model: str,
         store: ResultsStore,
-        reasoning_effort: str = "xhigh",
+        reasoning_effort: str = "medium",
     ):
         self.client = client                      # openai.OpenAI or test fake
         self.model = model
@@ -216,7 +216,7 @@ def _evaluation_rule(capture_count: int, window_size: int) -> str:
 
 class ProductivityAnalyzer:
     def __init__(self, client, model: str, store: ResultsStore,
-                 window_size: int = 5, reasoning_effort: str = "xhigh"):
+                 window_size: int = 5, reasoning_effort: str = "medium"):
         # client injected (real openai.OpenAI in prod, fake in tests).
         if window_size < 2:
             # A one-slot deque could evaluate alignment but could never reach
@@ -347,8 +347,8 @@ class ProductivityAnalyzer:
             ])
         request = {"model": self.model,
                    # Responses nests effort under `reasoning`; GPT-5.6 supports
-                   # xhigh for quality-first work:
-                   # https://developers.openai.com/api/docs/guides/latest-model
+                   # medium as its balanced starting point:
+                   # https://developers.openai.com/api/docs/guides/latest-model#update-api-and-model-parameters
                    "reasoning": {"effort": self.reasoning_effort},
                    "input": [{"role": "system", "content": SYSTEM_PROMPT},
                              {"role": "user", "content": user_content}],
