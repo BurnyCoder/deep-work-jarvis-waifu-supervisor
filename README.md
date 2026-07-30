@@ -352,11 +352,11 @@ environment and lockfile behavior.
 |---|---:|---|
 | `OPENAI_API_KEY` | none | Required API credential |
 | `VISION_MODEL` | `gpt-5.6-luna` | Rolling productivity vision model; must support original image detail |
-| `PROGRESS_REASONING_EFFORT` | `xhigh` | Productivity-model reasoning effort |
+| `PROGRESS_REASONING_EFFORT` | `medium` | Productivity-model reasoning effort |
 | `AGENT_VISION_MODEL` | `gpt-5.6-luna` | Frequent agent-activity vision model |
-| `AGENT_REASONING_EFFORT` | `xhigh` | Agent-activity reasoning effort |
+| `AGENT_REASONING_EFFORT` | `medium` | Agent-activity reasoning effort |
 | `TEXT_MODEL` | `gpt-5.6-luna` | Good-luck/nudge/milestone-praise message model |
-| `TEXT_REASONING_EFFORT` | `xhigh` | Feedback-message reasoning effort |
+| `TEXT_REASONING_EFFORT` | `medium` | Feedback-message reasoning effort |
 | `TTS_ENGINE` | `openai` | `openai` or `pyttsx3` playback |
 | `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
 | `TTS_VOICE` | `coral` | OpenAI speech voice |
@@ -389,11 +389,11 @@ value currently falls back to pyttsx3 rather than producing a validation error.
 
 All Responses API text and vision calls default to
 [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) with
-`xhigh` reasoning. Luna is optimized for cost-sensitive, high-volume workloads,
-while `xhigh` remains quality-oriented and can increase latency and cost,
-especially for the one-minute agent watcher; each workload therefore keeps
-separate `.env` overrides. Luna produces text rather than speech, so TTS
-remains on the dedicated
+`medium` reasoning. OpenAI documents
+[`medium` as a balanced starting point](https://developers.openai.com/api/docs/guides/latest-model#update-api-and-model-parameters),
+while higher efforts are intended for workloads with a measured quality gain.
+Each workload therefore keeps separate `.env` overrides. Luna produces text
+rather than speech, so TTS remains on the dedicated
 [GPT-4o mini TTS](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts).
 `VISION_MODEL` is the constrained override: productivity requests always use
 `detail="original"`. OpenAI currently documents original-dimension behavior for
