@@ -215,11 +215,14 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
      can be wrong. Agentic waiting does not spend social-break allowance.
 
 9. **Local realtime dashboard**
-   - The Flask development server binds only to `127.0.0.1` and defaults to
-     port `5000` through `UI_PORT`.
-   - The browser requests the no-cache `/status` JSON endpoint every three
-     seconds, never overlaps polls, pauses polling in a hidden tab, and keeps
-     the last good view during a temporary connection failure.
+   - Werkzeug's threaded development server hosts the Flask app only on
+     `127.0.0.1` and defaults to port `5000` through `UI_PORT`.
+   - With `--open-browser`, startup waits up to 30 seconds for `/status` to
+     answer before requesting one default-browser tab. Plain terminal runs do
+     not opt in, and `--smoke` starts neither the server nor browser worker.
+   - Once loaded, the dashboard requests the no-cache `/status` JSON endpoint
+     every three seconds, never overlaps polls, pauses polling in a hidden tab,
+     and keeps the last good view during a temporary connection failure.
    - It displays session state, canonical permanent/temporary/break access,
      agent state, desired enforcement counts and reconciliation state,
      current-session verdict history, and the cadence/result/error state of all
@@ -245,11 +248,13 @@ the AI can be wrong, and anyone with administrator access can undo the policy.
 
 `main.py` is the orchestration wrapper. It performs elevation, configuration
 and logging, blocker selection, object wiring, cleanup registration, and run
-mode selection. Domain behavior is in `deepwork/`.
+mode selection. Server startup and domain behavior are in `deepwork/`.
 
 ```mermaid
 flowchart TD
-    Main["main.py<br/>elevation · config · wiring · cleanup"] --> UI["Flask dashboard"]
+    Main["main.py<br/>elevation · config · wiring · cleanup"] --> Server["webui/server.py<br/>loopback bind · threaded serving · optional readiness/open"]
+    Server --> UI["Flask dashboard"]
+    Server -- "--open-browser: /status response → open once" --> Browser["default browser"]
     Main --> Policy["access_policy.py<br/>14 groups · validation · site/app projection"]
     Main --> State["SessionState"]
     Main --> Scheduler["Scheduler"]
@@ -412,8 +417,12 @@ against the current
 uv run pytest                      # hardware/network/admin-free unit suite
 uv run python main.py --smoke      # one direct capture/analyze/speak attempt
 uv run python main.py --dry-hosts  # full UI; hosts changes are logged only
+uv run python main.py --dry-hosts --open-browser  # full UI + ready browser; no hosts writes
 uv run python main.py              # real UAC + hosts enforcement + local UI
 ```
+
+`--open-browser` is opt-in for terminal runs, survives the Python UAC relaunch,
+and is ignored by `--smoke`.
 
 `--smoke` directly starts in-memory topic `smoke test`, runs one real
 productivity-monitor tick, and waits up to 60 seconds for queued speech. It
@@ -433,8 +442,10 @@ call the configured models, store artifacts, and play speech.
 For a normal run:
 
 1. Accept the UAC prompt.
-2. Read the logged `control panel:` URL and open
-   `http://127.0.0.1:<UI_PORT>`.
+2. Without `--open-browser`, open the logged `control panel listening:` URL.
+   With the flag—or the batch launcher—the app requests one browser tab only
+   after the configured dashboard answers `/status`. Use the logged URL if the
+   OS browser request fails.
 3. Enter a topic, choose only task-required website/app groups, optionally
    enable agentic mode, and select **Start session**.
 4. When a blocked website or app becomes necessary, enter a concrete goal,
@@ -448,19 +459,22 @@ For a normal run:
    cleanup; shutdown also gives transition generation only a bounded wait and
    does not guarantee that all queued speech finishes.
 
-The server is Flask's development server and is intentionally loopback-only.
-It has no authentication or CSRF defense. Do not expose it to a network without
-adding production serving, authentication, and request protections; Flask says its
-[development server is not for production](https://flask.palletsprojects.com/server/).
+The app uses Werkzeug's threaded development server, explicitly bound to
+`127.0.0.1`. It has no authentication or CSRF defense. Do not expose it to a
+network without adding production serving, authentication, and request
+protections; both [Werkzeug](https://werkzeug.palletsprojects.com/en/stable/serving/)
+and [Flask](https://flask.palletsprojects.com/server/) describe this server as
+development-only.
 
 ### Double-click launcher
 
 `Start Deep Work.bat` self-elevates, checks that `uv` is on `PATH`, and runs
-`uv run python main.py`. Its browser helper is currently hardcoded to
-`http://127.0.0.1:5599`, while the application and `.env.example` default to
-port `5000`. Set `UI_PORT=5599`, update the URL in the batch file, or open the
-actual logged URL manually. The helper waits a fixed four seconds; first-time
-dependency sync or startup can take longer, so refresh or use the logged URL.
+`uv run python main.py --open-browser`. The app derives the URL from `UI_PORT`,
+binds the loopback server, and opens the dashboard once only after `/status`
+responds—there is no fixed delay or launcher-owned port. A 30-second readiness
+timeout or browser-launch failure is logged without stopping a successfully
+bound server; open the logged URL manually in that case. See
+[`docs/startup.md`](docs/startup.md) for the exact sequence and troubleshooting.
 
 ## Dashboard and `/status`
 
@@ -689,7 +703,12 @@ access, an API call, capture hardware, or audio playback.
 
 ### Manual end-to-end checklist
 
-1. Start `uv run python main.py`, accept UAC, and open the logged dashboard URL.
+1. Set `UI_PORT` to an available non-default port, run
+   `uv run python main.py --dry-hosts --open-browser`, and confirm exactly one
+   tab opens on that port after readiness, without a connection-refused page or
+   reload. Stop it with Ctrl+C, inspect the newest log for listening → readiness
+   → open ordering, then start the real run and accept UAC for the remaining
+   enforcement checks.
 2. Confirm Start, temporary goal access, and Break show the same 14 checkboxes:
    exactly one Discord choice labeled **Web + App**, Telegram and Steam labeled
    **App**, and the other 11 labeled **Web**.
@@ -838,8 +857,9 @@ access, an API call, capture hardware, or audio playback.
   [`SettingsModifier:Win32/HostsFileHijack`](https://www.microsoft.com/en-us/wdsi/threats/malware-encyclopedia-description?Name=SettingsModifier%3AWin32%2FHostsFileHijack)
   for suspicious hosts-file changes. Confirm that a detection corresponds to
   this intentional edit before taking any exclusion action.
-- **Launcher port mismatch:** the batch helper opens `5599`; the application
-  default is `5000`.
+- **Browser opening is best-effort:** a readiness timeout, a false result from
+  the OS browser integration, or an exception leaves the bound server running.
+  Open the logged loopback URL manually.
 
 ## Development
 
