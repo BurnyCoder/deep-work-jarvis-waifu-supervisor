@@ -84,6 +84,7 @@ dependencies = [
     { name = "psutil" },
     { name = "python-dotenv" },
     { name = "pyttsx3" },
+    { name = "werkzeug" },
 ]
 
 [package.dev-dependencies]
@@ -101,6 +102,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyttsx3", specifier = ">=2.99" },
+    { name = "werkzeug", specifier = ">=3.1.0" },
 ]
 
 [package.metadata.requires-dev]
