@@ -32,16 +32,11 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-rem --- open the control panel ---------------------------------
-rem Parallel helper: wait 4 s for Flask to bind, then open the default
-rem browser. `start ""` = detached, first quoted arg is the window title
-rem (https://ss64.com/nt/start.html). If you changed UI_PORT in .env,
-rem update this URL to match.
-start "" /min cmd /c "timeout /t 4 /nobreak >nul & start "" http://127.0.0.1:5599"
-
 rem --- run ----------------------------------------------------
 echo Starting Deep Work (logs stream below; closing this window stops the app)...
-uv run python main.py
+rem Python owns UI_PORT and opens the browser only after /status responds, so
+rem first-time dependency work can take as long as needed without a failed tab.
+uv run python main.py --open-browser
 
 rem Keep the window open after exit/crash so the last log lines stay readable.
 pause

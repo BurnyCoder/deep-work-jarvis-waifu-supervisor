@@ -8,6 +8,7 @@
 
 import argparse
 import atexit
+from collections.abc import Sequence
 import logging
 import sys
 from datetime import datetime
@@ -16,14 +17,20 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     # argparse stdlib CLI parsing: https://docs.python.org/3/library/argparse.html
     p = argparse.ArgumentParser(description="Deep Work productivity enforcement")
     p.add_argument("--smoke", action="store_true",
                    help="run one capture/analyze/speak cycle and exit (no admin needed)")
     p.add_argument("--dry-hosts", action="store_true",
                    help="run everything but only LOG hosts-file changes (no admin needed)")
-    return p.parse_args()
+    p.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="open the dashboard after its local server answers a readiness request",
+    )
+    # An explicit sequence keeps parser tests hermetic; None retains sys.argv.
+    return p.parse_args(argv)
 
 
 def build_app_objects(cfg, blocker):
@@ -94,6 +101,36 @@ def run_smoke(scheduler, speech) -> None:
     # duplicating the same verdict through a special smoke-only speech path.
     speech.wait_idle(timeout=60)
     log.info("smoke cycle complete: %s", verdict)
+
+
+def run_mode(
+    args,
+    cfg,
+    scheduler,
+    flask_app,
+    speech,
+    *,
+    server_runner=None,
+) -> None:
+    """Run the selected smoke or long-lived dashboard phase."""
+
+    if args.smoke:
+        # Smoke remains a direct single tick and never owns a listening socket.
+        run_smoke(scheduler, speech)
+        return
+    if server_runner is None:
+        # Late import keeps `--help` fast and implementation out of the wrapper.
+        from deepwork.webui.server import serve_dashboard
+
+        server_runner = serve_dashboard
+    scheduler.start()                              # enforcer + monitor threads
+    # The server wrapper binds before launching its readiness worker. Direct
+    # CLI runs stay manual unless `--open-browser` is explicitly supplied.
+    server_runner(
+        flask_app,
+        cfg.ui_port,
+        open_browser=args.open_browser,
+    )
 
 
 def shutdown_runtime(scheduler, state, blocker, store, speech) -> None:
@@ -221,15 +258,7 @@ def main() -> None:
     )
 
     # --- phase 6: run ---
-    if args.smoke:
-        run_smoke(scheduler, speech)
-        return
-    scheduler.start()                              # enforcer + monitor threads
-    log.info("control panel: http://127.0.0.1:%d", cfg.ui_port)
-    # Flask dev server is fine for a localhost-only panel; threaded=True lets
-    # status polls overlap form posts:
-    # https://flask.palletsprojects.com/en/stable/api/#flask.Flask.run
-    flask_app.run(host="127.0.0.1", port=cfg.ui_port, threaded=True)
+    run_mode(args, cfg, scheduler, flask_app, speech)
 
 
 if __name__ == "__main__":
