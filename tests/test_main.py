@@ -2,11 +2,25 @@
 # collaborators. Fakes keep smoke and shutdown assertions hardware/network free.
 
 import threading
+from types import SimpleNamespace
 
 from deepwork.blocking.hosts_blocker import DryRunBlocker
 from deepwork.config import load_config
 from deepwork.state import Mode, SessionState
-from main import build_app_objects, run_smoke, shutdown_runtime
+from main import (
+    build_app_objects,
+    parse_args,
+    run_mode,
+    run_smoke,
+    shutdown_runtime,
+)
+
+
+def test_browser_opening_is_explicitly_opt_in_from_the_cli():
+    """Direct runs stay quiet while the launcher can request one browser tab."""
+
+    assert parse_args([]).open_browser is False
+    assert parse_args(["--open-browser"]).open_browser is True
 
 
 class FakeSpeech:
@@ -53,6 +67,52 @@ def test_smoke_cycle_does_not_duplicate_scheduler_speech():
     run_smoke(FakeScheduler(speech), speech)
     assert speech.spoken == ["Fresh progress is visible."]
     assert speech.waited
+
+
+def test_ui_mode_forwards_configured_port_and_browser_opt_in():
+    """The wrapper passes config and CLI intent to the server abstraction."""
+
+    events = []
+    scheduler = FakeScheduler(FakeSpeech())
+    scheduler.start = lambda: events.append("scheduler")
+    flask_app = object()
+
+    run_mode(
+        SimpleNamespace(smoke=False, open_browser=True),
+        SimpleNamespace(ui_port=8123),
+        scheduler,
+        flask_app,
+        scheduler.speech,
+        server_runner=lambda app, port, **kwargs: events.append(
+            ("server", app, port, kwargs)
+        ),
+    )
+
+    assert events == [
+        "scheduler",
+        ("server", flask_app, 8123, {"open_browser": True}),
+    ]
+
+
+def test_smoke_mode_ignores_browser_opt_in_and_never_starts_server():
+    """Combining --smoke and --open-browser retains the no-server contract."""
+
+    speech = FakeSpeech()
+    scheduler = FakeScheduler(speech)
+
+    run_mode(
+        SimpleNamespace(smoke=True, open_browser=True),
+        SimpleNamespace(ui_port=8123),
+        scheduler,
+        object(),
+        speech,
+        server_runner=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("smoke must not start the dashboard server")
+        ),
+    )
+
+    assert scheduler.state.last_verdict["productive"] is True
+    assert speech.waited is True
 
 
 def test_shutdown_serializes_final_hosts_clear_after_inflight_apply():

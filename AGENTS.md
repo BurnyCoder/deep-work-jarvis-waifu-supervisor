@@ -26,6 +26,7 @@ uv lock --check                    # verify lockfile/project metadata consistenc
 uv run pytest                      # complete fake-backed unit suite
 uv run python main.py --help       # CLI surface
 uv run python main.py --dry-hosts  # UI + scheduler; no UAC/hosts writes
+uv run python main.py --dry-hosts --open-browser  # readiness-gated browser; dry hosts
 uv run python main.py --smoke      # one direct capture/analyze/speak attempt
 uv run python main.py              # UAC + real hosts enforcement + UI
 ```
@@ -38,8 +39,9 @@ enforcer/app-killer/agent-watch tick, and emits no `session_start`/good-luck
 feedback, although registered shutdown reconciles OFF through the dry-run
 blocker and persists the topic history.
 
-`Start Deep Work.bat` self-elevates and runs the app, but its browser helper is
-fixed at `5599` while the app defaults to `5000`. Keep both values aligned.
+`Start Deep Work.bat` passes `--open-browser`; direct terminal runs open no
+browser unless that flag is supplied. Python's UAC relaunch preserves the
+argument, and `--smoke` ignores it because smoke starts no server.
 
 ## Wrapper and module ownership
 
@@ -47,7 +49,7 @@ fixed at `5599` while the app defaults to `5000`. Keep both values aligned.
 
 ```text
 arguments → elevation → config/logging → blocker selection
-          → collaborator wiring → cleanup registration → run mode
+          → collaborator wiring → cleanup registration → smoke or server run
 ```
 
 Implementation details live under `deepwork/`:
@@ -73,6 +75,7 @@ Implementation details live under `deepwork/`:
 | `feedback/tts.py` | OpenAI temporary WAV or per-utterance pyttsx3 speaker behind one FIFO daemon worker |
 | `webui/app.py` | Flask factory and state-changing session, access, break, agent, and disable routes |
 | `webui/status.py` | Composition of state and scheduler snapshots |
+| `webui/server.py` | Loopback threaded Werkzeug serving, optional `/status` readiness polling, and one-time default-browser launch |
 | `webui/templates/`, `static/` | Actions-first dashboard and safe non-overlapping polling |
 
 ## Behavioral invariants
@@ -225,8 +228,14 @@ Implementation details live under `deepwork/`:
   `work_access`, `goal_access`, and `break`; equivalent event payloads retain
   derived arrays for diagnostics and older-log readability. Render model text
   as text, never trusted HTML.
-- The Flask server stays on `127.0.0.1`. It has no authentication or CSRF
-  defense and must not be exposed as a production network service.
+- The Werkzeug development server hosting Flask stays on `127.0.0.1`. Server
+  construction binds `UI_PORT` before any browser worker starts. With
+  `--open-browser`, a 30-second monotonic deadline retries `/status`, treats any
+  completed HTTP response as reachable, and attempts at most one default-browser
+  tab. Bind failure prevents launch; readiness/browser failure is logged without
+  stopping a bound server; server exit cancels pending opening; smoke bypasses
+  all server/browser work. The server has no authentication or CSRF defense and
+  must not be exposed as a production network service.
 
 ## LLM, logging, storage, and privacy invariants
 
@@ -318,6 +327,10 @@ For every change:
    productivity branch. For rolling-comparison changes, also exercise at least
    two same-context captures and inspect the second request. For UI/state
    changes, also exercise the relevant Flask flow or full local app.
+   For server/launcher changes, run
+   `uv run python main.py --dry-hosts --open-browser` with an available
+   nondefault `UI_PORT`; verify one first-load tab without refresh and inspect
+   listening/readiness/open log ordering. `--smoke` does not cover this path.
 4. Inspect the newest terminal/file logs and relevant `results/` artifacts.
    Confirm prompts, outputs, stored records, and spoken behavior agree.
 5. Fix observed issues, rerun the affected path, and push the corrected
@@ -352,10 +365,9 @@ network, or model nondeterminism.
 
 ## Current gotchas
 
-- The application and `.env.example` default to port `5000`, while the batch
-  launcher opens `5599` after a fixed four-second delay. `UI_PORT` can move the
-  app, but the launcher URL must be changed separately; slow first startup may
-  also require a refresh or the logged URL.
+- Browser opening is best-effort. Readiness timeout, a false `webbrowser`
+  result, or an exception leaves the server running and the logged loopback URL
+  is the fallback.
 - `.python-version` selects Python 3.13. Do not invent a Python 3.14 wheel
   limitation without checking current package indexes.
 - The pyttsx3 adapter constructs an engine per utterance to avoid the linked
