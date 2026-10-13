@@ -15,6 +15,7 @@ places.
 | [Privacy and data](privacy-and-data.md) | What is captured or uploaded, OpenAI requests and retention considerations, local artifacts, speech backends, cleanup, and cost drivers |
 | [Troubleshooting](troubleshooting.md) | UAC, hosts cleanup, DNS and browser behavior, port conflicts, startup failures, state recovery, and known operational limitations |
 | [Verification](verification.md) | Automated checks and the full manual verification matrix |
+| [Experiment reports](../reports/README.md) | Dated measured results, learnings, limitations, sources, and PDF papers |
 | [Dashboard startup](startup.md) | The narrow server-bind, readiness-probe, and optional browser-opening contract |
 | [Verdict corrections](verdict-corrections.md) | Latest-verdict correction UI, HTTP fields, accounting, event ordering, feedback, and focused checks |
 | [Repository operating guide](../AGENTS.md) | Code-sensitive invariants, implementation constraints, verification expectations, and the GitHub workflow for maintainers and coding agents |
