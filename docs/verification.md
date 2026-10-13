@@ -179,6 +179,80 @@ If the verdict calls for a nudge or 30-minute praise, a text-message exchange
 can also appear. With `TTS_ENGINE=openai`, an utterance becomes a Speech API
 call; with pyttsx3 only synthesis/playback is local.
 
+## Model-migration checks
+
+Use these checks whenever changing the text/image models. They make real API
+requests, upload the captured screens and any successful webcam frame, and can
+play speech. They are separate from the hardware/network-free tests above.
+
+1. Verify the exact target ID and supported reasoning levels against the
+   [OpenAI model catalog](https://developers.openai.com/api/docs/models), then
+   follow the [migration guidance](https://developers.openai.com/api/docs/guides/latest-model#update-api-and-model-parameters).
+   Check all three model settings in defaults, `.env.example`, and the local
+   `.env`; preserve independently configured reasoning and speech settings.
+   Existing process environment values take precedence over `.env`.
+2. Update the existing default assertions first and confirm they fail against
+   the old defaults. After the migration, run
+   `uv run pytest tests/test_config.py tests/test_main.py tests/test_analyzer.py tests/test_feedback.py -q`,
+   the full suite, and `uv lock --check`.
+3. Run the real one-capture smoke command above. An exit code alone is not
+   sufficient: inspect the successful vision exchange and speech/error logs.
+4. Exercise two same-context captures, one agent-watch request, and one text
+   request with the existing collaborators. For a bounded check without
+   starting the scheduler loops, run this from the repository root after smoke
+   has exited:
+
+   ~~~powershell
+   @'
+   # Reuse the normal wiring, logging, and cleanup; no alternate API client.
+   import logging  # Record check outcomes beside the complete runtime prompts.
+   from pathlib import Path  # Resolve the existing cwd-relative log directory.
+   from deepwork.blocking.hosts_blocker import DryRunBlocker  # Log hosts cleanup.
+   from deepwork.config import load_config_from_dotenv  # Use local overrides.
+   from deepwork.logging_setup import setup_logging  # File and terminal logs.
+   from main import build_app_objects, shutdown_runtime  # Production wiring.
+   cfg = load_config_from_dotenv()  # Never print the credential-bearing config.
+   setup_logging(Path("logs"))  # Start a timestamped migration run log.
+   blocker = DryRunBlocker()  # This direct check never writes real hosts entries.
+   scheduler, _, (state, store, speech) = build_app_objects(cfg, blocker)  # Wire once.
+   try:
+       state.start_session("Verify the Deep Work model migration")  # One context.
+       for index in range(2):  # Keep the session unchanged across both captures.
+           result = scheduler._monitor_tick()  # Capture, parse, record, and speak.
+           logging.info("migration monitor %s: %s", index + 1, result)  # Evidence.
+           assert result["status"] in {"productive", "unproductive"}  # Accepted.
+           speech.wait_idle(timeout=180)  # Allow a bounded wait for slow speech.
+           assert speech._q.unfinished_tasks == 0  # Detect an incomplete wait.
+       capture = max((store.root / "captures").glob("*.jpg"))  # Latest saved image.
+       verdict = scheduler.agent_checker.check(capture)  # Low-detail live parse.
+       logging.info("migration agent verdict: %s", verdict)  # Preserve evidence.
+       text = scheduler.messages.generate("good_luck", topic=state.topic,
+                                          session_context=state.context_summary())
+       assert text.strip()  # The feedback workload must return nonempty speech text.
+   finally:
+       shutdown_runtime(scheduler, state, blocker, store, speech)  # Normal cleanup.
+   '@ | uv run python -
+   ~~~
+
+   The direct check starts no server or enforcer loop and performs no app-kill
+   sweep. It captures twice immediately after the preceding request/speech
+   completes, rather than proving the normal five-minute cadence. It persists
+   its verification topic through the normal shutdown path. Keep other app
+   instances stopped while running it.
+5. Inspect the saved request and response models, effective reasoning settings,
+   nonempty parsed outputs, and matching logs. Require a single-capture request
+   and a two-capture `COMPARISON (2/5)` request with `detail="original"`, an
+   agent-watch exchange with `detail="low"`, and a text exchange. If using a
+   nondefault window, substitute its size in the comparison header. Confirm
+   chronological capture references and the full successful Responses objects
+   are persisted. The current image-sizing table does not explicitly list
+   GPT-6 Luna; record live compatibility separately from documented sizing
+   guarantees. Never silently lower image detail to make a migration pass.
+6. Record measured outcomes, failures, fixes, source links, and untested limits
+   in a dated report under `reports/`, with its PDF and aggregate index. Keep
+   screenshots, session context, credentials, and raw exchanges in ignored
+   runtime directories, outside the committed report.
+
 ## Rolling productivity comparison
 
 Smoke cannot test this branch. Use a normal dashboard session with a positive

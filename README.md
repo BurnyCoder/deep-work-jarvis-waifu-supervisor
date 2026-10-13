@@ -226,11 +226,11 @@ The committed `.env.example` is the copyable source of defaults:
 | Variable | Default | Purpose |
 |---|---:|---|
 | `OPENAI_API_KEY` | none | Required API credential |
-| `VISION_MODEL` | `gpt-5.6-luna` | Productivity vision model; must support `detail="original"` |
+| `VISION_MODEL` | `gpt-6-luna` | Productivity vision model; must support `detail="original"` |
 | `PROGRESS_REASONING_EFFORT` | `medium` | Productivity response reasoning effort |
-| `AGENT_VISION_MODEL` | `gpt-5.6-luna` | Agent-activity vision model |
+| `AGENT_VISION_MODEL` | `gpt-6-luna` | Agent-activity vision model |
 | `AGENT_REASONING_EFFORT` | `medium` | Agent-activity reasoning effort |
-| `TEXT_MODEL` | `gpt-5.6-luna` | Feedback-message model |
+| `TEXT_MODEL` | `gpt-6-luna` | Feedback-message model |
 | `TEXT_REASONING_EFFORT` | `medium` | Feedback-message reasoning effort |
 | `TTS_ENGINE` | `openai` | Exact `openai` selects OpenAI speech; every other value currently falls back to pyttsx3 |
 | `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
@@ -248,13 +248,20 @@ integers, keep scheduler delays positive, keep the progress window at least 2,
 use a nonnegative allowance, and choose a valid TCP port. Nonpositive delays
 can cause tight loops and excessive API/CPU usage.
 
-Productivity requests use `detail="original"`. OpenAI documents that this
-detail level preserves supplied image dimensions for the configured GPT-5.6
-variants within the model's sizing limits. Here, each source tile was already
-resized to 960 pixels wide and the composite was JPEG-compressed, so it is not
-native monitor resolution. Verify any `VISION_MODEL` override against the
-current [vision input guide](https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level).
-Agent-watch requests use low detail.
+The three text/image workloads default to
+[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), which
+supports image input, structured outputs, and the configured reasoning levels.
+Existing `.env` model overrides take precedence over these defaults; update
+all three model variables when upgrading an existing installation, then restart
+the app. Keep any independently chosen reasoning settings.
+
+Productivity requests use `detail="original"` for dense screen content, subject
+to the selected model's support and sizing limits. Each source tile is already
+resized to 960 pixels wide and the composite is JPEG-compressed, so it is not
+native monitor resolution. Agent-watch requests use low detail. Verify model
+replacements with the current
+[vision input guide](https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level)
+and the [model-migration checks](docs/verification.md#model-migration-checks).
 
 ### Optional project presets
 
