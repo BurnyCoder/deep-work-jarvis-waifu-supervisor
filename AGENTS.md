@@ -438,9 +438,11 @@ network, or model nondeterminism.
   can abandon transition/speech work after its bounded wait.
 - Hosts policy is explicit, not wildcard-based. Substack author subdomains and
   other unlisted alternate domains are not covered.
-- Productivity vision uses original detail, which preserves supplied image
-  dimensions with the default GPT-5.6 Luna model within OpenAI's documented
-  sizing limits but can increase input tokens and latency. Every raw
+- Productivity vision defaults to GPT-6 Luna with original detail for dense
+  screen content. Model migrations must verify detail support through the
+  [live migration checks](docs/verification.md#model-migration-checks);
+  do not infer exact sizing behavior from a different model's documentation.
+  Original detail can increase input tokens and latency. Every raw
   monitor/webcam tile is first resized to 960 pixels wide and the composite is
   JPEG-compressed, so “original” does not mean native monitor resolution.
   `VISION_MODEL` overrides must support original detail.

@@ -390,9 +390,9 @@ class ProductivityAnalyzer:
                  "detail": PRODUCTIVITY_IMAGE_DETAIL},
             ])
         request = {"model": self.model,
-                   # Responses nests effort under `reasoning`; GPT-5.6 supports
-                   # medium as its balanced starting point:
-                   # https://developers.openai.com/api/docs/guides/latest-model#update-api-and-model-parameters
+                   # Responses nests effort under `reasoning`; GPT-6 Luna
+                   # supports medium as its documented default:
+                   # https://developers.openai.com/api/docs/models/gpt-6-luna
                    "reasoning": {"effort": self.reasoning_effort},
                    "input": [{"role": "system", "content": SYSTEM_PROMPT},
                              {"role": "user", "content": user_content}],
