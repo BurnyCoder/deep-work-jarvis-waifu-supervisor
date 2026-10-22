@@ -170,6 +170,14 @@ page is nonexistent. The old remote README images were replaced with the
 current local fixture image. Reachability alone does not establish that a
 source supports a claim; the relevant primary documentation was read as well.
 
+The final visual check found an invalid double-labeled edge in the detailed
+runtime diagram. After combining the labels into one supported edge, all three
+diagrams rendered locally with Mermaid 11.12.0 and were visually inspected;
+the full runtime map requires zooming to read its many nodes. The README's
+GitHub preview reported “Unable to render rich display” despite successful
+local rendering, so GitHub rendering remains unconfirmed. The syntax reference
+is [Mermaid flowcharts](https://mermaid.js.org/syntax/flowchart.html).
+
 ## Discussion and remaining limits
 
 The principal lesson is to distinguish an intended policy, an attempted
