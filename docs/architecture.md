@@ -153,7 +153,7 @@ flowchart TD
         ProductivityResponses -->|"returned response, including refusal"| Store
         AgentResponses -->|"returned response, including refusal"| Store
         ProductivityResponses -->|"usable parsed verdict only"| ContextGate{"same active context<br/>after analysis?"}
-        ContextGate -- yes -->|"record verdict and source event"| Life
+        ContextGate -->|"yes: record verdict and source event"| Life
         ContextGate -- no --> Stale["context_changed<br/>no verdict/event/speech"]
         AgentResponses -->|"usable verdict; no post-inference context gate"| Life
     end
