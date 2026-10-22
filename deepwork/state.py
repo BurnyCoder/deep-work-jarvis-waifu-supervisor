@@ -1,7 +1,8 @@
 # Session state machine — the single source of truth for what the app is
-# doing right now. Global context: the scheduler threads, the Flask UI and
-# the blockers all read/mutate state ONLY through these lock-guarded methods,
-# which is the standard way to share state between Python threads:
+# doing right now. Global context: these lock-guarded transitions and snapshots
+# coordinate the scheduler, Flask routes, and enforcement collaborators; some
+# callers also read public fields, so not every read is an atomic snapshot.
+# Python's locking primitives coordinate shared mutable state:
 # https://docs.python.org/3/library/threading.html#lock-objects
 
 # Enum gives named, identity-comparable modes (Mode.ON is Mode.ON):
@@ -33,8 +34,8 @@ from deepwork.access_policy import (
 
 class Mode(enum.Enum):
     # The three operating modes from requirement 5.
-    ON = "on"        # blocking + killing + monitoring all active
-    OFF = "off"      # everything disabled
+    ON = "on"        # focused session; access scopes and agent state refine policy
+    OFF = "off"      # no active enforcement or productivity-monitoring policy
     BREAK = "break"  # timed exception window, auto-restores to ON
 
 
@@ -76,7 +77,7 @@ class GoalAccessInfo:
 
 @dataclass(frozen=True)
 class GoalAccessFeedbackRequest:
-    """One immutable, exactly-once state-transition acknowledgment."""
+    """One immutable state-transition acknowledgment request, claimed at most once."""
 
     kind: str                                      # MessageGenerator template key
     context: tuple[tuple[str, object], ...]         # frozen keyword arguments
@@ -223,7 +224,7 @@ class SessionState:
     # date-iso -> minutes of social break reserved that day; keying by date
     # string makes the midnight rollover automatic and JSON-friendly.
     social_used_by_date: dict[str, int] = field(default_factory=dict)
-    productive_streak_min: int = 0                # consecutive productive mins
+    productive_streak_min: int = 0                # credited productive-minute streak
     last_verdict: dict | None = None              # latest analyzer result
     # Complete in-memory verdict history for the current session. The web UI
     # shows all entries; context_summary() independently slices the newest 5.
@@ -231,8 +232,8 @@ class SessionState:
     session_start: datetime | None = None         # when ON began (for records)
     session_end: datetime | None = None           # freezes elapsed time after OFF
     # Agentic engineering mode: while an AI coding agent is detected working
-    # on another screen, the whole blocklist opens; when it finishes,
-    # everything re-blocks (user is "waiting", not slacking).
+    # on another screen, the website blocklist opens; an idle verdict requests
+    # the ordinary scope-aware website policy again. Apps keep their own policy.
     agentic_mode: bool = False                    # opted in for this session
     agent_busy: bool = False                      # latest vision verdict
 
@@ -492,7 +493,10 @@ class SessionState:
             self.mode = Mode.OFF
             self.current_break = None
             self.goal_access = None
-            self.session_end = now or datetime.now()
+            # Keep an already-finished interval fixed; an untouched OFF startup
+            # has no session whose end should be invented during cleanup.
+            if self.session_start is not None and self.session_end is None:
+                self.session_end = now or datetime.now()
             self._mark_policy_changed(previous_hosts_policy)
             return ended_goal_access
 
@@ -518,7 +522,10 @@ class SessionState:
             self.current_break = None
             self.goal_access = None
             self._mark_policy_changed(previous_hosts_policy)
-            self.session_end = now or datetime.now()
+            # Repeated Disable submissions must not credit idle time after the
+            # first end or fabricate an end before any session has started.
+            if self.session_start is not None and self.session_end is None:
+                self.session_end = now or datetime.now()
             return True, ended_goal_access
 
     # ---------- goal-based temporary website/app access ----------
@@ -806,8 +813,8 @@ class SessionState:
         # Full blocklist minus every domain variant of the allowed site keys.
         with self._lock:
             # Agentic mode + agent working = sanctioned waiting time: the
-            # ENTIRE blocklist opens (user decision); re-applied full the
-            # moment the agent is detected idle.
+            # website blocklist opens. A later idle verdict requests the normal
+            # blocklist, retaining any active task/goal website permissions.
             if self.mode is Mode.ON and self.agentic_mode and self.agent_busy:
                 return ()
             freed = {d for key in access_site_keys(self._allowed_group_keys())
@@ -824,8 +831,8 @@ class SessionState:
                          if p not in spared)
 
     def set_agentic(self, on: bool) -> None:
-        # Enable/disable agentic mode; busy flag resets so unblocking only
-        # ever follows a fresh vision verdict, never a stale one.
+        # Reset the stored busy flag when toggling. A watcher already in flight
+        # can still publish its result because it has no post-inference gate.
         with self._lock:
             changed = on != self.agentic_mode or self.agent_busy
             previous_hosts_policy = (
@@ -837,8 +844,8 @@ class SessionState:
                 self._mark_policy_changed(previous_hosts_policy)
 
     def set_agent_busy(self, busy: bool) -> bool:
-        """Record the latest agent-activity verdict; True only on CHANGE so
-        the scheduler applies hosts/speech on transitions, not every poll."""
+        """Record whether the busy flag changed; the caller retries dirty policy
+        even on steady polls, but queues feedback only for a changed flag."""
         with self._lock:
             changed = busy != self.agent_busy
             previous_hosts_policy = (
@@ -932,8 +939,8 @@ class SessionState:
         """Fold one analyzer verdict into the streak; return 'praise'/'nudge'/None.
 
         Requirement 4: nudge whenever unproductive; praise once per 30
-        consecutive productive minutes (streak then restarts so a long
-        session earns praise again every 30 min). Every verdict also joins
+        credited productive minutes (streak then restarts at zero; this is not
+        a measurement of elapsed work time). Every verdict also joins
         the current-session evaluation history for dashboard and TTS grounding.
         """
         identity = (
@@ -1191,7 +1198,7 @@ class SessionState:
             elif self.mode is Mode.BREAK:
                 pause_reason = "A scheduled break is active."
             elif self.agentic_mode and self.agent_busy:
-                pause_reason = "The AI coding agent is working."
+                pause_reason = "The watcher reports AI coding agent activity."
             else:
                 pause_reason = None
 

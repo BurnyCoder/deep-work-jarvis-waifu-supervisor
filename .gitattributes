@@ -1,4 +1,4 @@
-# Batch files must keep CRLF endings for cmd.exe (goto/label parsing quirks)
+# Keep the Windows launcher on consistent CRLF working-tree line endings.
 # https://git-scm.com/docs/gitattributes#_eol
 *.bat text eol=crlf
 

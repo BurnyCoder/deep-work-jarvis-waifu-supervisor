@@ -31,8 +31,9 @@ The Python administrator relaunch reconstructs the original argument list, so
 5. The worker requests `/status` directly over loopback. Connection failures
    retry until the 30-second [`time.monotonic`](https://docs.python.org/3.13/library/time.html#time.monotonic)
    deadline. Each request timeout is capped by the time remaining.
-6. Any completed HTTP response, including a non-2xx response, proves the local
-   server is reachable. The worker then calls
+6. Receiving HTTP status and response headers, including a non-2xx status,
+   establishes reachability; the probe does not drain the response body or
+   validate dashboard content. The worker then calls
    [`webbrowser.open_new_tab`](https://docs.python.org/3.13/library/webbrowser.html#webbrowser.open_new_tab)
    exactly once for the root dashboard URL.
 7. The server continues until shutdown. Exiting the server signals a pending

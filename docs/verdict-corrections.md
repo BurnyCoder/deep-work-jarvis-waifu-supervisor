@@ -143,10 +143,11 @@ Model or speech failure does not roll back the correction and the claimed
 acknowledgement is not retried.
 
 If the original verdict's feedback is still being generated when a correction
-lands, its now-stale utterance is suppressed before speech. Work already sent
+lands, its now-stale utterance is suppressed before enqueueing speech. Work already sent
 to a model can still finish and be logged or stored. The correction does not
 cancel or erase the original vision request, response, reason, observation, or
-earlier audio that already played.
+audio already queued, currently playing, or already played. There is no
+verdict-revision check inside the speech worker itself.
 
 The correction acknowledgement is a separate Responses API text request. Its
 complete prompt and response are logged and stored under `results/llm/`, so the
@@ -200,8 +201,9 @@ For a manual check:
    To reproduce a stale-tab conflict, capture an older form payload (or freeze
    that tab's `/status` polling), apply a correction/restore cycle elsewhere,
    and submit the captured payload. Confirm it receives HTTP 409 instead of
-   changing the latest entry. A normally visible tab refreshes every three
-   seconds and may replace its stale form before it can be clicked.
+   changing the latest entry. A visible tab schedules its next refresh three
+   seconds after the previous request finishes and may replace its stale form
+   before it can be clicked.
 6. Correct during BREAK, then finish the break and correct again. Confirm the
    first change can adjust the preserved streak, while the later historical
    change updates the rate without restoring the ended streak or changing break

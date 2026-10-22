@@ -1,5 +1,5 @@
-# Tests for deepwork/config.py — written FIRST (TDD) to pin down the Config
-# contract before implementation. Run with `uv run pytest`.
+# Tests for deepwork/config.py pin the configuration contract with explicit
+# environment mappings. Run with `uv run pytest`.
 # pytest basics: https://docs.pytest.org/en/stable/getting-started.html
 
 from deepwork.config import SITE_DOMAINS, expand_www, load_config
@@ -64,7 +64,7 @@ def test_legacy_batch_size_still_configures_progress_window():
 def test_blocklist_covers_required_sites_and_variants():
     # The spec's 12 site groups must all be present, including known
     # subdomain/alias variants that a hosts file needs listed explicitly
-    # (hosts files have no wildcards: https://www.currentware.com/blog/how-to-block-websites-using-hosts-file/)
+    # (explicit hosts mappings: https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues)
     domains = set(load_config({"OPENAI_API_KEY": "k"}).blocked_domains)
     for required in [
         "reddit.com", "www.reddit.com", "old.reddit.com",
@@ -91,8 +91,8 @@ def test_site_groups_map_names_to_domains():
 
 
 def test_expand_www_adds_www_only_to_apex_domains():
-    # www. prefix is added for apex domains (one dot) but not for domains
-    # that already carry a subdomain — avoids nonsense like www.old.reddit.com
+    # This catalog heuristic adds www for one-dot inputs; it does not identify
+    # registered domains generally (for example, example.co.uk has two dots).
     assert expand_www(["reddit.com"]) == ["reddit.com", "www.reddit.com"]
     assert expand_www(["old.reddit.com"]) == ["old.reddit.com"]
 

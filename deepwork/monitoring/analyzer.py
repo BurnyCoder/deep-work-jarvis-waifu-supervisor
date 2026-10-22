@@ -12,18 +12,20 @@ import logging
 from collections import deque
 from pathlib import Path
 
-# pydantic BaseModel doubles as the JSON schema the API is forced to follow:
+# Pydantic BaseModel supplies the schema used for structured output validation;
+# a refusal or incomplete response need not contain a valid parsed verdict:
 # https://docs.pydantic.dev/latest/concepts/models/
 from pydantic import BaseModel
 
 from deepwork.access_policy import access_labels
+from deepwork.llm_output import record_response, require_output
 from deepwork.storage import ResultsStore
 
 log = logging.getLogger(__name__)
 
-# Dense stitched desktop captures need their original pixels so small code,
-# document, and UI changes remain visible to the productivity model. The fast
-# one-image agent watcher keeps low detail because it only needs coarse status:
+# Request original detail to favor dense desktop content, subject to the selected
+# model's sizing limits; the supplied JPEG already contains resized source tiles.
+# The one-image agent watcher requests low detail for coarse activity evidence:
 # https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level
 PRODUCTIVITY_IMAGE_DETAIL = "original"
 AGENT_IMAGE_DETAIL = "low"
@@ -156,7 +158,7 @@ class ProductivityVerdict(BaseModel):
 
 
 # Agentic mode: is the user's AI coding agent still working? Judged from ONE
-# capture per poll (fast cadence beats batched depth for this question).
+# capture per poll, independently of the productivity comparison window.
 AGENT_WATCH_PROMPT = (
     "You are watching a developer's screens for agentic engineering. Decide "
     "whether an AI coding agent (e.g. Claude Code, Cursor, Copilot, a "
@@ -215,9 +217,6 @@ class AgentActivityChecker:
             user_content[0]["text"],
         )
         response = self.client.responses.parse(**request)
-        verdict: AgentActivityVerdict = response.output_parsed
-        log.info("agent-watch verdict: working=%s reason=%s",
-                 verdict.agent_working, verdict.reason)
         stored_request = {**request,
                           "text_format": AgentActivityVerdict.__name__,
                           "input": [request["input"][0],
@@ -226,8 +225,12 @@ class AgentActivityChecker:
                                                  {"type": "input_image",
                                                   "file": str(path),
                                                   "detail": AGENT_IMAGE_DETAIL}]}]}
-        self.store.save_llm_exchange("agent_watch", stored_request,
-                                     response.model_dump(mode="json", warnings=False))
+        record_response(response, logger=log, store=self.store,
+                        kind="agent_watch", request=stored_request)
+        # A returned refusal must be recorded but must not change agent policy.
+        verdict = require_output(response.output_parsed, kind="agent_watch")
+        log.info("agent-watch verdict: working=%s reason=%s",
+                 verdict.agent_working, verdict.reason)
         return verdict
 
 
@@ -313,8 +316,8 @@ class ProductivityAnalyzer:
         # User content: one text part naming the topic + one input_image per
         # capture. Multiple images in one content array are documented at:
         # https://developers.openai.com/api/docs/guides/images-vision#giving-a-model-images-as-input
-        # Original detail preserves dense desktop pixels for task-progress
-        # comparison; each image still counts toward request tokens:
+        # Original detail requests model-dependent preprocessing appropriate for
+        # dense content; it does not guarantee unmodified pixels or legibility:
         # https://developers.openai.com/api/docs/guides/images-vision#choose-an-image-detail-level
         # Put the chronology rule beside the current count so one image cannot
         # be mistaken for a comparison and capture two can establish a stall.
@@ -413,17 +416,10 @@ class ProductivityAnalyzer:
             prompt_text,
             ", ".join(path.name for path in window),
         )
-        # responses.parse validates the reply against ProductivityVerdict and
-        # retries malformed JSON at the API layer:
-        # https://github.com/openai/openai-python#structured-outputs
+        # responses.parse builds the schema and validates returned text. Parsing
+        # failures can raise; SDK retries cover transport/status errors, not
+        # malformed JSON: https://github.com/openai/openai-python#retries
         response = self.client.responses.parse(**request)
-        verdict: ProductivityVerdict = response.output_parsed
-        log.info(
-            "vision output: productive=%s reason=%s observed=%s",
-            verdict.productive,
-            verdict.reason,
-            verdict.observed,
-        )
         # Persist the whole exchange; data URLs are elided from the stored
         # request (the JPEGs already live in results/captures/).
         stored_request = {**request,
@@ -431,9 +427,14 @@ class ProductivityAnalyzer:
                           "input": [request["input"][0],
                                     {"role": "user",
                                      "content": stored_content}]}
-        # mode="json" + warnings=False silences pydantic's union-serializer
-        # noise when dumping the SDK's ParsedResponse (harmless but loud):
-        # https://docs.pydantic.dev/latest/concepts/serialization/#serialization-warnings
-        self.store.save_llm_exchange("vision", stored_request,
-                                     response.model_dump(mode="json", warnings=False))
+        record_response(response, logger=log, store=self.store,
+                        kind="vision", request=stored_request)
+        # Record refusals/empty responses before rejecting them as non-verdicts.
+        verdict = require_output(response.output_parsed, kind="vision")
+        log.info(
+            "vision output: productive=%s reason=%s observed=%s",
+            verdict.productive,
+            verdict.reason,
+            verdict.observed,
+        )
         return verdict

@@ -1,11 +1,11 @@
 # Hosts-file website blocker. Global context: redirecting a domain to
-# 127.0.0.1 in the Windows hosts file makes every browser/app resolve it to
-# the local machine, where nothing answers — the classic OS-level block
-# (https://www.howtogeek.com/784196/how-to-edit-the-hosts-file-on-windows-10-or-11/).
-# Our entries live inside a marker-fenced section so apply() is idempotent
-# and clear() surgically restores the user's own lines.
-# Known bypass documented in README: browser "Secure DNS" (DoH) skips the OS
-# resolver entirely and must be disabled for hosts blocking to work.
+# loopback in the Windows hosts file redirects clients that honor that mapping:
+# https://learn.microsoft.com/en-us/windows-server/networking/dns/queries-lookups
+# Resolver behavior varies; Chromium's built-in resolver also reads HOSTS, so
+# Secure DNS alone does not imply that hosts blocking is bypassed:
+# https://chromium.googlesource.com/chromium/src/+/main/net/dns/README.md
+# Our marker-fenced section is replaced/removed by rewriting the complete file;
+# this is not a byte-preserving backup/restore or a network security boundary.
 
 import logging
 import subprocess
@@ -31,13 +31,14 @@ class HostsBlocker:
     # ---------- internal helpers ----------
 
     def _read(self) -> str:
-        # utf-8 tolerates comments with any characters; hosts is ASCII in
-        # practice (https://docs.python.org/3/library/pathlib.html#pathlib.Path.read_text)
+        # Read as strict UTF-8; incompatible existing encodings raise instead of
+        # being silently repaired. Newline decoding follows pathlib's text I/O:
+        # https://docs.python.org/3/library/pathlib.html#pathlib.Path.read_text
         return self.hosts_path.read_text(encoding="utf-8")
 
     def _strip_block(self, text: str) -> str:
-        # Remove a previous fenced section if present. Splitting on the
-        # markers is simpler and safer than regex over user content.
+        # Remove the first fenced section and normalize adjacent newlines. An
+        # unmatched start marker consumes the remaining tail; see recovery docs.
         if START_MARK not in text:
             return text
         before, rest = text.split(START_MARK, 1)      # up to our fence
@@ -45,8 +46,9 @@ class HostsBlocker:
         return before.rstrip("\n") + ("\n" if before.strip() else "") + after.lstrip("\n")
 
     def _flush_dns(self) -> None:
-        # Windows caches DNS answers; flush so blocks/unblocks take effect
-        # immediately: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/ipconfig
+        # Request a Windows resolver-cache reset; the exit status is ignored,
+        # and application caches/connections can outlive this best-effort step:
+        # https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/ipconfig
         subprocess.run(["ipconfig", "/flushdns"], capture_output=True, check=False)
 
     # ---------- public API ----------
@@ -55,8 +57,9 @@ class HostsBlocker:
         """Replace our fenced section with 127.0.0.1/::1 lines for `domains`."""
         with self._lock:
             base = self._strip_block(self._read())    # idempotency: start clean
-            # Both A (IPv4) and AAAA (IPv6) shapes per domain — modern stacks
-            # try IPv6 first (https://www.currentware.com/blog/how-to-block-websites-using-hosts-file/)
+            # Map each hostname in both address families without assuming which
+            # a client prefers. Chromium documents both A and AAAA resolution:
+            # https://chromium.googlesource.com/chromium/src/+/main/net/dns/README.md
             lines = [START_MARK]
             for d in domains:
                 lines.append(f"127.0.0.1 {d}")
@@ -68,7 +71,7 @@ class HostsBlocker:
             log.info("hosts block applied: %d domains", len(domains))
 
     def clear(self) -> None:
-        """Remove our fenced section entirely, restoring the original file."""
+        """Remove the first managed section; do not promise exact-file restoration."""
         with self._lock:
             text = self._read()
             if START_MARK not in text:                # nothing of ours → no-op

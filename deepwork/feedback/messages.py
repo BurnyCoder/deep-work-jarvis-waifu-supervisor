@@ -6,6 +6,7 @@
 
 import logging
 
+from deepwork.llm_output import record_response, require_output
 from deepwork.storage import ResultsStore
 
 log = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ log = logging.getLogger(__name__)
 # the {session_context} block (topic, elapsed time, streak, allowance,
 # recent concrete observations) so the voice can reference real specifics.
 _CONTEXT_SUFFIX = (
-    "\n\nFull session context — ground what you say in these specifics:\n"
+    "\n\nCurrent session summary — ground what you say in these specifics:\n"
     "{session_context}"
 )
 
@@ -34,26 +35,33 @@ _TEMPLATES = {
         "so they know you actually saw it. No emojis, it will be read aloud."
     ),
     "praise": (
-        "A user working on {topic!r} has stayed focused for 30 minutes "
-        "straight. The monitor's judgment: {reason!r}. What was concretely on "
-        "their screens: {observed!r}. Write one or two sincere spoken "
-        "sentences congratulating them — name the focused work you saw them "
-        "doing. No emojis, it will be read aloud."
+        "A user working on {topic!r} reached the app's 30-minute credited "
+        "productive-streak milestone based on sampled evaluations. This is "
+        "not continuous observation or proof of uninterrupted focus. The "
+        "monitor's judgment: {reason!r}. The recorded evidence: {observed!r}. "
+        "Write one or two sincere spoken sentences congratulating them on "
+        "the milestone and the specific task-aligned work observed. Do not "
+        "claim a measured duration of continuous focus. No emojis, it will "
+        "be read aloud."
     ),
     "agent_running": (
-        "A user's AI coding agent just started working on their task, so "
-        "they're free to relax or browse until it finishes — the monitor "
-        "said: {reason!r}. Write one short, friendly spoken sentence telling "
-        "them the agent is running and they can take it easy for a bit. "
-        "No emojis, it will be read aloud."
+        "The watcher now sees evidence that a user's AI coding agent is "
+        "working: {reason!r}. Website blocking is relaxed while the agent "
+        "is marked busy; app killing continues for apps without active "
+        "permission. Write one short, friendly spoken sentence saying the "
+        "agent appears busy and the user can take a moment. Do not claim "
+        "that all apps are allowed or that completion is guaranteed. No "
+        "emojis, it will be read aloud."
     ),
     "agent_done": (
-        "A user's AI coding agent has just FINISHED and is waiting for their "
-        "review — the monitor said: {reason!r}. Non-task websites were just "
-        "re-blocked; any website/app access groups explicitly required for "
-        "the task remain available. Write one short, upbeat spoken sentence "
-        "telling them the agent is done and it's time to come back and review "
-        "its work. No emojis, it will be read aloud."
+        "The watcher no longer sees an actively working AI coding agent: "
+        "{reason!r}. It may be finished, awaiting approval, or no longer "
+        "visible; do not assume successful completion. Ordinary website "
+        "policy has resumed, including task-required groups and any active "
+        "goal access. Write one short, upbeat spoken sentence asking the "
+        "user to check whether the agent needs input or has work to review, "
+        "grounded in the observation. Do not claim that every non-task site "
+        "was blocked. No emojis, it will be read aloud."
     ),
     "break_ack": (
         "A user is taking a {minutes}-minute break for: {purpose!r}. Write one "
@@ -107,7 +115,7 @@ _TEMPLATES = {
 def build_prompt(kind: str, **context) -> str:
     # str.format_map fills only the placeholders the template mentions:
     # https://docs.python.org/3/library/stdtypes.html#str.format_map
-    # session_context defaults to a stub so ad-hoc calls never KeyError.
+    # Default only the optional summary; missing kind-specific fields still raise.
     context.setdefault("session_context", "(no session context available)")
     return (_TEMPLATES[kind] + _CONTEXT_SUFFIX).format_map(context)
 
@@ -148,16 +156,16 @@ class MessageGenerator:
             reasoning={"effort": self.reasoning_effort},
             input=prompt,
         )
-        text = response.output_text.strip()
-        log.info("message output (%s): %s", kind, text)     # full output, uncut
-        self.store.save_llm_exchange(
-            "message",
-            {
+        record_response(
+            response, logger=log, store=self.store, kind="message",
+            request={
                 "model": self.model,
                 "reasoning": {"effort": self.reasoning_effort},
                 "kind": kind,
                 "input": prompt,
             },
-            response.model_dump(),
         )
+        # Refusal/empty replies stay in the audit trail without becoming speech.
+        text = require_output(response.output_text, kind="message").strip()
+        log.info("message output (%s): %s", kind, text)     # full output, uncut
         return text

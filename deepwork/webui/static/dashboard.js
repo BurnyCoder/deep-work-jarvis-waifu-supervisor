@@ -32,6 +32,8 @@
       }
     : null;
   let hadActiveGoalAccess = false;
+  // Polling must not replace a checkbox choice the user has not submitted.
+  let agenticSettingDirty = false;
 
   const byId = (id) => document.getElementById(id);
 
@@ -66,9 +68,9 @@
     const seconds = Number(totalSeconds) || 0;
     if (seconds >= 60 && seconds % 60 === 0) {
       const minutes = seconds / 60;
-      return `every ${minutes} min`;
+      return `${minutes} min after each run`;
     }
-    return `every ${seconds}s`;
+    return `${seconds}s after each run`;
   }
 
   function formatClock(isoTimestamp) {
@@ -263,7 +265,9 @@
     const total = history.length;
     const rate = total ? Math.round((productiveCount / total) * 100) : 0;
     const remaining = Number(status.social_minutes_remaining) || 0;
-    const cap = Math.max(1, Number(status.social_minutes_cap) || 1);
+    // Zero is a valid configured allowance; only the HTML progress maximum
+    // needs a positive value: https://html.spec.whatwg.org/multipage/form-elements.html#the-progress-element
+    const cap = Math.max(0, Number(status.social_minutes_cap) || 0);
     const progress = byId("social-progress");
 
     setText("productive-streak", `${status.productive_streak_min || 0} min`);
@@ -278,12 +282,28 @@
     setText("history-total", `${total} ${total === 1 ? "check" : "checks"}`);
 
     if (progress) {
-      progress.max = cap;
+      progress.max = Math.max(1, cap);
       progress.value = Math.min(cap, remaining);
       progress.setAttribute(
         "aria-label",
         `${remaining} of ${cap} social allowance minutes remaining`,
       );
+    }
+  }
+
+  function syncAgenticSetting(enabled) {
+    // Keep the control aligned with the server until a local change occurs.
+    // A later matching server value makes that unsaved choice redundant.
+    const checkbox = byId("agentic-enabled");
+    if (!checkbox) {
+      return;
+    }
+    const serverEnabled = Boolean(enabled);
+    if (checkbox.checked === serverEnabled) {
+      agenticSettingDirty = false;
+    }
+    if (!agenticSettingDirty) {
+      checkbox.checked = serverEnabled;
     }
   }
 
@@ -302,15 +322,27 @@
       setText("break-detail", "No active break.");
     }
 
+    syncAgenticSetting(status.agentic_mode);
     if (!status.agentic_mode) {
       setText("agent-state", "Off");
-      setText("agent-detail", "Standard focus monitoring.");
+      setText("agent-detail", "Agent watching is disabled.");
+    } else if (status.mode !== "on") {
+      // OFF and BREAK retain the last busy flag, but the watcher is inactive
+      // and only ON/busy opens website policy (SessionState.effective_blocklist).
+      setText("agent-state", "Watcher paused");
+      setText(
+        "agent-detail",
+        status.mode === "break"
+          ? "Agent watching is paused during the break."
+          : "Agent watching is inactive while enforcement is off.",
+      );
     } else if (status.agent_busy) {
-      setText("agent-state", "Agent working");
-      setText("agent-detail", "Website restrictions are temporarily open.");
+      setText("agent-state", "Watcher reports activity");
+      setText("agent-detail", "Website policy allows all configured domains; productivity monitoring is paused.");
     } else {
-      setText("agent-state", "Agent idle");
-      setText("agent-detail", "Focus monitoring and blocking are active.");
+      // False also describes a newly enabled watcher before its first result.
+      setText("agent-state", "Watching for agent activity");
+      setText("agent-detail", "Productivity monitoring is enabled; task website policy applies.");
     }
 
     const workAccess = status.work_access || {};
@@ -328,7 +360,7 @@
     } else if (workGroupLabels.length && status.mode === "break") {
       accessDetail = `${presetDetail}Task access groups remain available; monitoring is paused for the break.`;
     } else if (workGroupLabels.length) {
-      accessDetail = `${presetDetail}Work-required access groups remain available; monitoring stays active.`;
+      accessDetail = `${presetDetail}Work-required access groups remain available; productivity monitoring is ${status.monitoring_active ? "enabled" : "paused"}.`;
     }
     setText(
       "project-detail",
@@ -623,9 +655,10 @@
     if (name === "enforcer") {
       const killed = result.killed_processes || [];
       if (killed.length) {
-        return `Stopped: ${killed.join(", ")}`;
+        // kill_targets records successful kill() calls, not observed exits.
+        return `Termination requested: ${killed.join(", ")}`;
       }
-      return result.status === "off" ? "Enforcement is off." : "No target apps found.";
+      return result.status === "off" ? "Enforcement is off." : "No process termination requests succeeded.";
     }
     if (name === "monitor") {
       const verdict = matchingMonitorVerdict(result, status);
@@ -789,6 +822,8 @@
   }
 
   function schedulePoll() {
+    // Recursive timeout waits after completion; it is not a fixed-rate clock:
+    // https://developer.mozilla.org/en-US/docs/Web/API/Window/setTimeout
     window.clearTimeout(pollTimer);
     pollTimer = window.setTimeout(fetchStatus, POLL_INTERVAL_MS);
   }
@@ -841,6 +876,14 @@
   const goalAccessDurationMode = byId("goal-access-duration-mode");
   if (goalAccessDurationMode) {
     goalAccessDurationMode.addEventListener("change", syncGoalAccessDuration);
+  }
+  const agenticSetting = byId("agentic-enabled");
+  if (agenticSetting) {
+    // A checkbox change is local intent until its native form is submitted:
+    // https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/change_event
+    agenticSetting.addEventListener("change", () => {
+      agenticSettingDirty = true;
+    });
   }
   syncGoalAccessDuration();
   window.setInterval(updateLiveClocks, CLOCK_INTERVAL_MS);

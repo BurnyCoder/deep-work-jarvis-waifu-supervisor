@@ -18,14 +18,13 @@ log = logging.getLogger(__name__)
 
 
 def fix_streamed_wav_header(path: Path) -> None:
-    """Patch the RIFF/data chunk sizes of a STREAMED wav file.
+    """Set RIFF/data sizes from the simple streamed-WAV layout's file length.
 
-    The TTS API streams audio before knowing its length, so the wav header's
-    RIFF size and data-chunk size fields arrive as the 0xFFFFFFFF placeholder
-    (verified live 2026-07-07). winsound.PlaySound silently rejects such
-    files — the bug that made all spoken feedback inaudible. Rewriting both
-    fields from the real file size makes the file spec-valid.
-    RIFF layout reference: http://soundfile.sapp.org/doc/WaveFormat/
+    This helper assumes the first ``data`` marker starts the final audio chunk;
+    it is not a general RIFF chunk parser or a validation of arbitrary WAVs.
+    Synthetic placeholder-size coverage lives in tests/test_feedback.py.
+    RIFF layout reference:
+    https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff-
     """
     data = bytearray(path.read_bytes())
     if data[:4] != b"RIFF" or len(data) < 44:      # not a wav → leave alone
@@ -53,8 +52,8 @@ def make_openai_speaker(client, model: str, voice: str):
                 model=model, voice=voice, input=text,
                 response_format="wav") as response:
             response.stream_to_file(wav_path)
-        # Streamed wav headers carry placeholder sizes that winsound rejects
-        # SILENTLY (no exception, no sound) — patch them before playback.
+        # Normalize sizes for the simple WAV layout before requesting playback;
+        # this does not prove that a device produced audible sound.
         fix_streamed_wav_header(wav_path)
         import winsound  # Windows-only stdlib: https://docs.python.org/3/library/winsound.html
         # SND_FILENAME plays a WAV file synchronously (returns when done).
@@ -67,11 +66,12 @@ def make_pyttsx3_speaker():
     """Return a speak(text) closure using the offline SAPI5 voice."""
     def speak(text: str) -> None:
         import pyttsx3                             # import here: only if used
-        engine = pyttsx3.init()                    # fresh engine per utterance
+        engine = pyttsx3.init()                    # obtain the default engine
         engine.say(text)                           # queue the phrase
         engine.runAndWait()                        # block until spoken
-        # A fresh init per call avoids the long-standing "second runAndWait
-        # never returns" reuse bug: https://github.com/nateshmbhat/pyttsx3/issues/193
+        # This adapter retains no engine between calls. init() is a factory that
+        # may reuse a live engine; a new instance or reuse-bug fix is not promised:
+        # https://pyttsx3.readthedocs.io/en/latest/engine.html#the-engine-factory
     return speak
 
 
@@ -83,7 +83,7 @@ def make_speaker(cfg, client):
 
 
 class SpeechQueue:
-    """FIFO speech: say() never blocks the caller; one daemon thread speaks."""
+    """FIFO speech: say() queues without waiting for synthesis or playback."""
 
     # None is the sentinel that tells the worker to exit — the documented
     # queue shutdown idiom: https://docs.python.org/3/library/queue.html
@@ -92,13 +92,13 @@ class SpeechQueue:
     def __init__(self, speak_fn):
         self._speak = speak_fn
         self._q: queue.Queue = queue.Queue()
-        # daemon=True so a crashed main thread never hangs on speech:
+        # A daemon speech worker does not keep the process alive by itself:
         # https://docs.python.org/3/library/threading.html#threading.Thread.daemon
         self.thread = threading.Thread(target=self._run, daemon=True, name="tts")
         self.thread.start()
 
     def say(self, text: str) -> None:
-        log.info("speaking: %s", text)             # every utterance logged
+        log.info("speech queued: %s", text)       # enqueueing is not playback
         self._q.put(text)
 
     def _run(self) -> None:

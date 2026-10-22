@@ -5,6 +5,7 @@
 
 import json
 import logging
+from types import SimpleNamespace
 import pytest
 from PIL import Image
 
@@ -39,6 +40,41 @@ class FakeResponses:
 class FakeClient:
     def __init__(self, verdict):
         self.responses = FakeResponses(verdict)
+
+
+@pytest.mark.parametrize("workload", ["vision", "agent_watch"])
+@pytest.mark.parametrize("refused", [False, True])
+def test_missing_vision_verdict_is_logged_and_saved_before_rejection(
+    tmp_path, caplog, workload, refused,
+):
+    """A returned refusal or empty reply is evidence, never a verdict."""
+    # Structured Outputs can return a refusal without output_parsed:
+    # https://developers.openai.com/api/docs/guides/structured-outputs
+    refusal = "Synthetic refusal with complete detail. " * 200
+    payload = {
+        "status": "completed",
+        "output": [{"type": "message", "content": [
+            {"type": "refusal", "refusal": refusal},
+        ]}] if refused else [],
+    }
+    response = SimpleNamespace(
+        output_parsed=None,
+        model_dump=lambda **kwargs: payload,
+    )
+    client = SimpleNamespace(responses=SimpleNamespace(parse=lambda **kwargs: response))
+    store = ResultsStore(tmp_path)
+    capture = store.save_capture(Image.new("RGB", (2, 2), "white"))
+    with caplog.at_level(logging.INFO), pytest.raises(ValueError, match="no usable output"):
+        if workload == "vision":
+            ProductivityAnalyzer(client, "fake", store).add_capture(capture, "test")
+        else:
+            AgentActivityChecker(client, "fake", store).check(capture)
+    # Preserve the entire returned object even when no verdict is accepted.
+    saved = json.loads(next((tmp_path / "llm").glob(f"*_{workload}.json")).read_text())
+    assert saved["response"] == payload
+    assert json.dumps(payload, ensure_ascii=False) in caplog.text
+    if refused:
+        assert refusal in caplog.text
 
 
 def test_verdict_requires_observed_description():

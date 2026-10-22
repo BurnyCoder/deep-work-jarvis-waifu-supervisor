@@ -190,7 +190,8 @@ server:
 
 Only one grant can be active at a time, but you can complete or expire one and
 then start another; there is no per-session count or cumulative-minute cap.
-The session remains ON, productivity monitoring continues, app-capable groups
+The session remains ON and the grant itself does not pause productivity
+monitoring; agent-busy mode can independently pause it. App-capable groups
 can spare their processes, and the grant spends no social allowance. For the
 monitor to count the activity as productive, visible evidence must serve both
 the main session topic and the stated temporary goal.
@@ -232,7 +233,8 @@ minutes.
 The break ends automatically on the first enforcer tick after its displayed end
 time, or immediately through the Stop button. Completion returns to ON, removes
 break-only access, makes any still-active goal grant eligible again, resets the
-productive streak, and resumes productivity monitoring.
+productive streak, and resumes productivity monitoring unless agent-busy mode
+still pauses it.
 
 ## Agentic engineering mode
 
@@ -246,12 +248,16 @@ effects follow the latest watcher transition:
 
 - **Initial or repeated idle verdict:** normal website restrictions and
   productivity monitoring stay active. The watcher still reconciles policy, but
-  it does not queue an agent-finished message without a preceding busy state.
-- **Agent working:** the complete website blocklist opens and productivity
+  it does not queue a busy-to-idle message without a preceding busy state.
+- **Watcher reports activity:** the complete website blocklist opens and productivity
   monitoring pauses.
 - **Busy-to-idle transition:** normal website restrictions return, active
   task/goal website permissions remain open, productivity monitoring resumes,
   and one transition message is queued.
+
+Idle does not prove successful completion: the watcher also treats a visible
+permission prompt or no visible agent as idle. The message therefore asks the
+user to check the agent rather than asserting that its task finished.
 
 Agentic mode never grants app permission. The app killer continues to target
 configured processes unless an active task or goal scope spares them. Detection
@@ -290,9 +296,16 @@ Keep it on `127.0.0.1`; see [Privacy and data](privacy-and-data.md).
 
 The dashboard is served only on `127.0.0.1` at the configured `UI_PORT`. Unless
 you launch with `--open-browser`, open the loopback URL printed in the terminal.
-The browser fetches the no-cache `/status` payload every three seconds, avoids
-overlapping requests, pauses network polling in a hidden tab, and retains the
+The browser schedules its next no-cache `/status` request three seconds after
+the preceding request finishes, avoids overlapping requests, pauses network
+polling in a hidden tab, and retains the
 last successful view during a temporary connection failure.
+
+The agentic checkbox initially reflects the server and follows later status
+updates unless the user has an unsaved change. Domain counts describe the
+desired hosts policy, including in dry-hosts mode; a successful reconciliation
+does not independently verify browser blocking. Process results count returned
+termination requests, not confirmed process exits.
 
 The page shows:
 
@@ -311,6 +324,10 @@ The page shows:
 BREAK and OFF retain the current in-memory verdict timeline for review. A new
 session or process restart clears it. The history has no within-session cap, so
 long sessions produce a larger `/status` response and browser timeline.
+Session duration freezes at the first Disable or shutdown; repeating Disable
+does not add elapsed time. Productive streak minutes are configured credits per
+accepted evaluation, not continuous measurement of attention; see
+[effective accounting](verdict-corrections.md#effective-accounting).
 
 Only the newest verdict can be changed between Productive and Off track. A
 manual correction changes the effective dashboard/accounting label while
