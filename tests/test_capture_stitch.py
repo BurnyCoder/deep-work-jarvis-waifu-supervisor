@@ -14,7 +14,7 @@ from deepwork.monitoring.webcam_capture import frame_to_image
 class FakeGrab:
     # Mimics mss.base.ScreenShot: .size (width, height) and .bgra bytes —
     # exactly what Image.frombuffer consumes in the documented mss→PIL recipe:
-    # https://python-mss.readthedocs.io/examples.html#pil
+    # https://python-mss.readthedocs.io/stable/examples.html#pil
     def __init__(self, w, h, b, g, r):
         self.size = (w, h)
         self.bgra = bytes([b, g, r, 255]) * (w * h)

@@ -104,7 +104,7 @@
               {{ access_picker(
                 "task",
                 "Websites and apps needed for this task",
-                "Checked access groups stay available for this focused session without using break minutes. Monitoring and feedback remain active.",
+                "Checked access groups stay available for this focused session without using break minutes. Task permissions do not themselves pause monitoring; breaks and agent-busy mode can.",
                 access_options
               ) }}
 
@@ -113,8 +113,9 @@
                 <span>
                   <strong>Agentic engineering</strong>
                   <small>
-                    Open all websites while an AI coding agent works; task access
-                    groups remain available when it finishes.
+                    Allow all configured website groups while the watcher
+                    reports an AI coding agent working. App permissions still
+                    follow task and goal access.
                   </small>
                 </span>
               </label>
@@ -137,8 +138,9 @@
                     data-state="idle">Ready</span>
             </div>
             <p class="control-description">
-              Allow configured website or app groups for a concrete task goal. Focus
-              monitoring continues, and these grants never use social allowance.
+              Allow configured website or app groups for a concrete task goal.
+              These grants do not themselves pause monitoring; breaks and
+              agent-busy mode can. Grants never use social allowance.
             </p>
 
             <form id="goal-access-form" method="post" action="/goal-access"
@@ -221,7 +223,10 @@
             </p>
             <form method="post" action="/agentic" class="stack-form">
               <label class="checkbox-field">
-                <input id="agentic-enabled" type="checkbox" name="enabled">
+                <!-- Render the current setting before JavaScript fetches status;
+                     checked semantics: https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/checkbox#checked -->
+                <input id="agentic-enabled" type="checkbox" name="enabled"
+                       {% if agentic_mode %}checked{% endif %}>
                 <span><strong>Enable agent watcher</strong></span>
               </label>
               <button type="submit" class="secondary-button">Apply setting</button>
@@ -359,7 +364,7 @@
           <article class="metric-card">
             <p class="card-label">Last synced</p>
             <p id="last-updated" class="metric-value metric-value-small">—</p>
-            <p class="metric-note">Dashboard data refreshes every three seconds.</p>
+            <p class="metric-note">Refreshes about every three seconds while visible; slower requests delay the next refresh.</p>
           </article>
         </div>
 
@@ -396,7 +401,7 @@
                   <dt>Agentic mode</dt>
                   <dd>
                     <strong id="agent-state">Off</strong>
-                    <span id="agent-detail">Standard focus monitoring.</span>
+                    <span id="agent-detail">Loading watcher status…</span>
                   </dd>
                 </div>
                 <div>
@@ -417,7 +422,7 @@
                 <article>
                   <span class="operation-icon" aria-hidden="true">WEB</span>
                   <p id="blocked-domains" class="operation-value">—</p>
-                  <p class="operation-label">domains blocked</p>
+                  <p class="operation-label">domains in policy</p>
                 </article>
                 <article>
                   <span class="operation-icon" aria-hidden="true">APP</span>
@@ -425,6 +430,7 @@
                   <p class="operation-label">process targets</p>
                 </article>
               </div>
+              <p class="metric-note">Desired policy; dry-hosts only logs website changes. Actual website access is not verified.</p>
             </section>
 
             <section class="panel" aria-labelledby="operations-heading">
