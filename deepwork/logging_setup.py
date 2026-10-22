@@ -1,6 +1,7 @@
 # Dual-destination logging: every event goes to a timestamped file in logs/
-# AND to the terminal in real time, as the project spec requires. All LLM
-# prompts/responses flow through this root logger uncut.
+# AND to the terminal in real time. Application prompts and returned response
+# objects flow through this root logger uncut; a call that raises before returning
+# a response can only contribute the exception information available to the app.
 # Pattern: https://docs.python.org/3/howto/logging-cookbook.html#logging-to-multiple-destinations
 
 import logging
@@ -24,7 +25,7 @@ def setup_logging(logs_dir: Path) -> Path:
     """Configure the root logger with file + terminal handlers; return the log file path.
 
     Idempotent: calling again removes previously-installed deepwork handlers
-    first, so lines are never duplicated (classic pitfall noted at
+    first, so repeated setup does not duplicate this app's handlers (see
     https://docs.python.org/3/howto/logging.html#handlers).
     """
     # mkdir -p equivalent: https://docs.python.org/3/library/pathlib.html#pathlib.Path.mkdir
@@ -43,9 +44,9 @@ def setup_logging(logs_dir: Path) -> Path:
         root.removeHandler(h)                # detach…
         h.close()                            # …and release the file handle
 
-    # Windows consoles default to cp1252, which mangles characters like ’ in
-    # LLM output; reconfigure stderr to utf-8 (Python 3.7+ TextIOWrapper API):
-    # https://docs.python.org/3/library/sys.html#sys.stderr
+    # Python uses UTF-8 for Windows console devices, while redirected streams
+    # can use a locale encoding. Explicit UTF-8 keeps our terminal/pipe logging
+    # consistent: https://docs.python.org/3.13/library/sys.html#sys.stdin
     import sys
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")

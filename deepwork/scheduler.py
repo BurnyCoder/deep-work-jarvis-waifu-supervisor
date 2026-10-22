@@ -1,11 +1,11 @@
 # Background scheduler — the app's heartbeat. Independent daemon loops:
-#  * enforcer (every KILL_INTERVAL_S): kills distraction apps and acts as the
-#    break watchdog that auto-restores blocking when a break expires.
-#  * monitor (every CAPTURE_INTERVAL_S): capture → stitch → save → rolling
-#    progress analysis → exactly one feedback utterance.
+#  * enforcer (KILL_INTERVAL_S delay): requests target-process termination,
+#    expires breaks/grants, and reconciles the latest desired hosts policy.
+#  * monitor (CAPTURE_INTERVAL_S delay): capture → stitch → save → rolling
+#    progress analysis → at most one original verdict utterance enqueue.
 #  * agent-watch (optional): checks whether an AI coding agent is still active.
-# Plain threads (not asyncio) because every underlying call is blocking C or
-# subprocess work; loops wait on threading.Event so stop() is instant:
+# Plain threads accommodate blocking capture, filesystem, subprocess, and API
+# work; threading.Event promptly wakes waits but cannot cancel an active tick:
 # https://docs.python.org/3/library/threading.html#threading.Event.wait
 
 import logging
@@ -58,10 +58,11 @@ class Scheduler:
         self.capture_interval_s = capture_interval_s
         self.kill_interval_s = kill_interval_s
         self.capture_fn = capture_fn or capture_stitched
-        # Both vision loops reach the same physical camera. OpenCV documents
-        # VideoCapture as non-thread-safe, so one primitive lock serializes the
-        # complete injected capture call without delaying model or storage work:
-        # https://docs.opencv.org/master/d0/db6/tutorial_orbbec_astra_openni.html
+        # Both vision loops use the same camera-index-0 open/read/release path:
+        # https://docs.opencv.org/4.x/d8/dfe/classcv_1_1VideoCapture.html
+        # Serializing our complete capture callable avoids overlapping device
+        # access without locking model or storage work; this is our lock policy:
+        # https://docs.python.org/3/library/threading.html#lock-objects
         self._capture_lock = threading.Lock()
         self.kill_fn = kill_fn or app_killer.kill_targets
         # Agentic mode watcher (None = feature off): polls whether the user's
@@ -71,13 +72,13 @@ class Scheduler:
         # One clock powers verdict timestamps and runtime countdowns; tests
         # may inject a fixed/mutable clock without patching module globals.
         self.now_fn = now_fn or datetime.now
-        # Rolling windows overlap; each new verdict certifies only the newest
-        # interval, never the whole historical context.
+        # Rolling windows overlap; each new verdict credits this configured
+        # interval, not measured work time or the whole historical context.
         self.verdict_minutes = max(1, capture_interval_s // 60)
         # The frozen state snapshot includes both session and temporary-grant
         # identity, preventing captures from leaking across either boundary.
         self._analysis_context = None
-        # Event.set() wakes every wait() immediately → instant shutdown.
+        # Event.set() wakes waiting loops; it cannot cancel a tick already running.
         self.stop_event = threading.Event()
         self.threads: list[threading.Thread] = []
         # Optional agent watcher remains present in the public snapshot with
@@ -329,9 +330,9 @@ class Scheduler:
         }
 
     def _agent_watch_tick(self) -> dict:
-        # Agentic engineering mode: while the user's AI agent works on another
-        # screen, everything unblocks; the moment it finishes, all sites
-        # re-block and TTS calls the user back. Only relevant in ON+agentic.
+        # Agentic mode requests an empty website blocklist after a busy verdict.
+        # A later idle verdict restores scope-aware website policy and queues
+        # feedback. App permissions remain unchanged; eligibility is checked once.
         from deepwork.state import Mode
         if self.agent_checker is None or self.state.mode is not Mode.ON \
                 or not self.state.agentic_mode:
@@ -430,7 +431,7 @@ class Scheduler:
                  self.kill_interval_s, self.capture_interval_s)
 
     def stop(self) -> None:
-        self.stop_event.set()                      # wake both loops → exit
+        self.stop_event.set()                      # Wake waits in every enabled loop.
         for t in self.threads:
             t.join(timeout=5)                      # bounded wait, no hang
         self.runtime_status.stop()

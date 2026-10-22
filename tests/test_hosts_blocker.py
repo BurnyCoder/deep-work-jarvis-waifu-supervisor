@@ -26,11 +26,10 @@ def test_apply_appends_fenced_block_with_ipv4_and_ipv6(tmp_path, monkeypatch):
     text = hosts.read_text(encoding="utf-8")
     assert text.startswith(ORIGINAL)              # pre-existing lines intact
     assert START_MARK in text and END_MARK in text
-    # Both address families are redirected — browsers try AAAA lookups too
-    # (https://www.currentware.com/blog/how-to-block-websites-using-hosts-file/)
+    # Both address families receive mappings; no browser/network is exercised.
     assert "127.0.0.1 reddit.com" in text and "::1 reddit.com" in text
     assert "127.0.0.1 x.com" in text
-    assert calls                                   # DNS cache flushed
+    assert calls                                   # Fake records the flush request.
 
 
 def test_apply_is_idempotent_and_replaces_old_block(tmp_path, monkeypatch):
@@ -46,7 +45,7 @@ def test_clear_restores_original_content(tmp_path, monkeypatch):
     blocker, hosts, _ = make_blocker(tmp_path, monkeypatch)
     blocker.apply(["reddit.com"])
     blocker.clear()
-    # Byte-for-byte restoration of the user's own hosts entries.
+    # This text fixture is restored; arbitrary bytes/newlines are not tested.
     assert hosts.read_text(encoding="utf-8") == ORIGINAL
 
 

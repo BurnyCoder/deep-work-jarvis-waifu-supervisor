@@ -5,8 +5,8 @@
 
 from PIL import Image, ImageDraw
 
-# All tiles are scaled to this width; 960 px keeps text on screenshots
-# legible to the vision model while keeping the JPEG payload small.
+# All tiles are scaled to this width as a payload/detail tradeoff. Resizing can
+# lose small text; this setting does not guarantee model legibility.
 TILE_W = 960
 LABEL_H = 24            # black bar above each tile holding its label text
 
@@ -25,8 +25,9 @@ def stitch(tiles: list[tuple[str, Image.Image]], caption: str) -> Image.Image:
     height = LABEL_H + sum(LABEL_H + img.height for _, img in scaled)
     canvas = Image.new("RGB", (TILE_W, height), "black")
     draw = ImageDraw.Draw(canvas)
-    # ImageDraw.text with default bitmap font — no font file dependency:
-    # https://pillow.readthedocs.io/en/stable/reference/ImageDraw.html#PIL.ImageDraw.ImageDraw.text
+    # Use Pillow's bundled default font, with no external font file. Pillow may
+    # use its bundled FreeType font rather than a bitmap font:
+    # https://pillow.readthedocs.io/en/stable/reference/ImageFont.html#PIL.ImageFont.load_default
     draw.text((6, 6), caption, fill="white")
     y = LABEL_H
     for label, img in scaled:

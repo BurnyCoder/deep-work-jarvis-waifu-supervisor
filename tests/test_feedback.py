@@ -2,9 +2,14 @@
 # faked (no network); the TTS queue is tested with an injected speak function.
 
 import struct
+import json
+import logging
 import threading
 import time
 from datetime import datetime
+from types import SimpleNamespace
+
+import pytest
 
 from deepwork.feedback.goal_access import (
     GoalAccessFeedbackQueue,
@@ -26,7 +31,7 @@ class FakeResponses:
         class R:                                    # stand-in for Response
             output_text = "You've got this!"        # SDK convenience property:
             # https://github.com/openai/openai-python (responses.create)
-            def model_dump(self):
+            def model_dump(self, **kwargs):        # match the SDK serialization API
                 return {"output_text": self.output_text}
         return R()
 
@@ -201,6 +206,53 @@ def test_generator_calls_llm_and_persists_exchange(tmp_path):
     assert list((tmp_path / "llm").glob("*_message.json"))
 
 
+@pytest.mark.parametrize("output", ["", "   ", None])
+def test_message_without_usable_text_is_logged_saved_and_rejected(tmp_path, caplog, output):
+    """The caller cannot enqueue a refusal or empty response as speech."""
+    refusal = "Synthetic refusal explains the unavailable feedback. " * 200
+    payload = {"status": "completed", "output": [
+        {"type": "message", "content": [{"type": "refusal", "refusal": refusal}]},
+    ]}
+    response = SimpleNamespace(output_text=output, model_dump=lambda **kwargs: payload)
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: response))
+    generator = MessageGenerator(client, "fake", ResultsStore(tmp_path))
+    with caplog.at_level(logging.INFO), pytest.raises(ValueError, match="no usable output"):
+        generator.generate("good_luck", topic="test")
+    saved = json.loads(next((tmp_path / "llm").glob("*_message.json")).read_text())
+    assert saved["response"] == payload
+    assert refusal in caplog.text
+
+
+def test_incomplete_message_with_partial_text_is_saved_but_not_returned(tmp_path, caplog):
+    """A nonempty partial response cannot masquerade as completed feedback."""
+    partial = "An unfinished observation that should not be spoken"
+    payload = {
+        "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": partial}]}],
+    }
+    response = SimpleNamespace(output_text=partial, model_dump=lambda **kwargs: payload)
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: response))
+    generator = MessageGenerator(client, "fake", ResultsStore(tmp_path))
+    with caplog.at_level(logging.INFO), pytest.raises(ValueError, match="incomplete"):
+        generator.generate("good_luck", topic="test")
+    saved = json.loads(next((tmp_path / "llm").glob("*_message.json")).read_text())
+    assert saved["response"] == payload
+    assert partial in caplog.text
+
+
+def test_feedback_describes_sampled_credit_and_watcher_evidence():
+    """Speech must not turn sampled evidence into elapsed focus or completion."""
+    praise = build_prompt("praise", topic="test", reason="relevant work", observed="notes")
+    idle = build_prompt("agent_done", reason="permission prompt visible")
+    busy = build_prompt("agent_running", reason="tool status visible")
+    assert "credited" in praise and "sampled" in praise
+    assert "30 minutes straight" not in praise
+    assert "has just FINISHED" not in idle
+    assert "approval" in idle and "active goal" in idle
+    assert "app killing" in busy
+    assert "Current session summary" in praise
+
+
 def test_speech_queue_speaks_in_order_and_survives_errors():
     spoken = []
     def speak(text):
@@ -320,11 +372,10 @@ def test_policy_independent_correction_feedback_waits_only_for_event_release():
 
 
 def test_fix_streamed_wav_header_patches_placeholder_sizes(tmp_path):
-    # OpenAI's STREAMED wav responses carry 0xFFFFFFFF in the RIFF and data
-    # chunk size fields (length unknown at stream start) — winsound silently
-    # refuses such files, which made TTS inaudible. Build a minimal RIFF/WAVE
-    # with the same placeholder sizes and assert both get patched to reality.
-    # RIFF layout: http://soundfile.sapp.org/doc/WaveFormat/
+    # A synthetic minimal RIFF/WAVE with unknown-length placeholders checks
+    # byte repair only; it cannot establish API output or audible playback.
+    # RIFF layout:
+    # https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff-
     fmt = struct.pack("<4sIHHIIHH", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16)
     pcm = b"\x00\x00" * 100                        # 100 silent samples
     body = b"WAVE" + fmt + b"data" + struct.pack("<I", 0xFFFFFFFF) + pcm

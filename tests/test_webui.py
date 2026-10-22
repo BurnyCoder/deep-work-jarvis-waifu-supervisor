@@ -159,6 +159,30 @@ def test_index_lists_previous_topics(ui):
     assert "ml-research" in html and "X / Twitter" in html
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_index_renders_current_agent_watcher_setting(ui, enabled):
+    """A freshly loaded control must show the existing setting before polling."""
+
+    client, state, *_ = ui
+    state.set_agentic(enabled)
+    html = client.get("/").get_data(as_text=True)
+    # Limit the check to the actual checkbox tag rather than unrelated copy.
+    checkbox = html.split('id="agentic-enabled"', 1)[1].split(">", 1)[0]
+    assert ("checked" in checkbox) is enabled
+
+
+def test_dashboard_labels_desired_policy_and_conditional_monitoring(ui):
+    """Copy must describe desired policy and retain independent pause rules."""
+
+    client, *_ = ui
+    html = client.get("/").get_data(as_text=True)
+    assert "domains in policy" in html
+    assert "Actual website access is not verified" in html
+    assert "These grants do not themselves pause monitoring" in html
+    assert "Refreshes about every three seconds while visible" in html
+    assert "Monitoring and feedback remain active" not in html
+
+
 def test_index_uses_actions_first_semantic_dashboard(ui):
     client, *_ = ui
     html = client.get("/").get_data(as_text=True)

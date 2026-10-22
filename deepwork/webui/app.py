@@ -178,6 +178,9 @@ def create_app(
         # Jinja template gets the topic history for the <datalist> dropdown
         # and current mode for display:
         # https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates
+        # Read the initial mode/controls from one locked policy snapshot, so
+        # the watcher checkbox is accurate before the first JavaScript poll.
+        snapshot = state.status_snapshot(now=get_now())
         projects = [
             {
                 "name": name,
@@ -188,10 +191,11 @@ def create_app(
         return render_template(
             "index.html",
             topics=state.previous_topics,
-            mode=state.mode.value,
+            mode=snapshot["mode"],
+            agentic_mode=snapshot["agentic_mode"],
             projects=projects,
             access_options=access_options(),
-            goal_access_active=state.goal_access is not None,
+            goal_access_active=snapshot["goal_access"] is not None,
         )
 
     @app.post("/start")
