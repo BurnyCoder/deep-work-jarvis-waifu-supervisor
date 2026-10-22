@@ -29,6 +29,7 @@ From a fresh clone on Windows:
 uv sync --locked
 uv lock --check
 uv run pytest
+node --test tests/dashboard.test.cjs
 uv run python main.py --help
 ~~~
 
@@ -36,6 +37,13 @@ uv run python main.py --help
 refuses to update an inconsistent lock. `uv lock --check` checks that project
 metadata and the lock agree without modifying either; see uv's
 [locking and syncing documentation](https://docs.astral.sh/uv/concepts/projects/sync/).
+
+The JavaScript regression command needs [Node.js](https://nodejs.org/en/download)
+22 or later, only for development verification. It uses the built-in
+[test runner](https://nodejs.org/api/test.html) and small DOM stubs, without npm
+packages. Install Node separately if absent; `uv sync` installs Python packages
+only. These tests exercise rendered status, checkbox edits, and polling timers;
+they do not establish browser layout or real enforcement.
 
 The full pytest suite should make no administrator, OpenAI, hardware, browser,
 or audio request. It injects collaborators or uses temporary files around
@@ -57,7 +65,7 @@ git check-ignore -v .env logs/ results/
 ```
 
 Review the rendered README on GitHub, including its Mermaid graph, tables,
-admonition, and attachment images. Follow every changed relative link and
+admonition, and screenshot. Follow every changed relative link and
 heading anchor. Compare each setup/default/runtime statement with executable
 code, focused tests, `.env.example`, `pyproject.toml`, and `uv.lock`; compare
 external service or library claims with current primary documentation.
@@ -77,8 +85,9 @@ handoff.
 | Scheduler loops, context changes, expiry, and retry | `uv run pytest tests/test_scheduler.py tests/test_runtime_status.py` |
 | Flask routes and status contract | `uv run pytest tests/test_webui.py` |
 | Shared picker and safe rendering | `uv run pytest tests/test_unified_picker_ui.py` |
+| Dashboard state and polling behavior | `node --test tests/dashboard.test.cjs` |
 | Startup, CLI, launcher, and browser readiness | `uv run pytest tests/test_main.py tests/test_launcher.py tests/test_webui_server.py` |
-| Logging and artifacts | `uv run pytest tests/test_logging_setup.py tests/test_storage.py` |
+| Logging, returned refusals, and artifacts | `uv run pytest tests/test_logging_setup.py tests/test_llm_output.py tests/test_storage.py` |
 
 The fake-blocker tests—not a manual UI run—cover a failed hosts reconciliation,
 HTTP 503 on affected mutating routes, `reconciliation_pending`, and the
@@ -303,7 +312,7 @@ and capture/API/TTS remain real after Start.
    `allowed_sites` should include Discord but not Telegram; `allowed_apps`
    should include both.
 4. Start a timed goal grant for one web and one app group. Confirm mode stays
-   ON, monitoring continues, social allowance is unchanged, countdown fields
+   ON, monitoring continues unless agent-busy mode pauses it, social allowance is unchanged, countdown fields
    are present, and start/end events retain the complete goal and canonical
    plus derived access arrays.
 5. Start a BREAK with a different group. Confirm permanent task groups remain
@@ -318,7 +327,9 @@ and capture/API/TTS remain real after Start.
    rest; natural expiry keeps the full reservation. Use valid dashboard values:
    purpose, 1–240 minutes, and exact `away` or `social_media`.
 8. Submit the wrong Disable phrase and confirm HTTP 403/state remains active.
-   Submit the exact displayed phrase and confirm state becomes OFF.
+   Submit `I will not stop cool deepwork session` and confirm state becomes OFF.
+   The dashboard input does not display the phrase. Repeat Disable and confirm
+   the completed session's duration stays fixed.
 
 The automated route suite, rather than forged manual input, is the canonical
 check for strict `allowed_groups` rejection, legacy-field rejection,
@@ -387,7 +398,8 @@ best-case run.
 
 Exercise reverse, restore, duplicate, stale identity/revision, correction
 during BREAK, correction after break completion, JSONL durability gating,
-neutral acknowledgement, and suppression of in-flight original speech.
+neutral acknowledgement, and suppression of original feedback still generating
+before speech enqueue. Already queued or playing speech is not canceled.
 
 The complete HTTP, audit, accounting, privacy, and manual procedure is in
 [Latest productivity-verdict corrections](verdict-corrections.md). A correction
