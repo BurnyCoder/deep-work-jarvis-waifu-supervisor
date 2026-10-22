@@ -21,7 +21,7 @@ succeeds.
 | OpenAI speech | Only the utterance text selected for speech | A streamed WAV in the OS temporary directory until successful playback deletes it; speech responses and audio are not copied into `results/llm/` |
 | pyttsx3 speech | Nothing for synthesis or playback | Audio is synthesized and played locally; the monitoring and text-generation paths above still use OpenAI |
 
-The default capture combines one screenshot from every physical monitor with
+The default capture combines one screenshot from every monitor enumerated by mss with
 one frame from camera index `0` when that read succeeds. Each tile is resized
 to 960 pixels wide, labeled, stacked vertically, and the composite is saved as
 a quality-80 JPEG. Productivity vision uses `detail="original"`; agent-watch
@@ -49,7 +49,7 @@ run from that directory.
 |---|---|
 | `logs/deepwork_YYYYMMDD_HHMMSS.log` | A whole-second-named UTF-8 log selected at setup. Textual LLM prompts and semantic outputs are logged completely to this file and the terminal; image base64 is represented by capture filenames. File logging uses append mode, so independent processes started in the same second can share one path. |
 | `results/captures/*.jpg` | Sensitive stitched monitor/webcam composites from successful capture persistence. |
-| `results/llm/*.json` | Complete successful text, productivity-vision, and agent-watch Responses API objects. Vision requests contain the saved JPEG paths instead of duplicate base64 bytes. Failed API calls and streamed speech are not stored here. |
+| `results/llm/*.json` | Complete text, productivity-vision, and agent-watch Responses objects returned by the SDK, including refusals or incomplete outputs. Vision requests contain saved JPEG paths instead of duplicate base64 bytes. Exceptions before an object returns and streamed speech are not stored here. |
 | `results/sessions/YYYYMMDD.jsonl` | Timestamped session, break, access, agent, verdict, and correction audit events, one JSON object per line. |
 | `results/state.json` | Only daily social-allowance usage and previous-topic history. Live sessions, grants, breaks, and verdict history are not restored after restart. |
 | OS temporary directory | An OpenAI speech WAV may remain if the API, header repair, playback, or deletion path raises after the temporary file is created. |
@@ -60,6 +60,13 @@ limit, pruning job, or secure-erasure mechanism. Capture, exchange, and state
 writes are direct and non-atomic. Session JSONL is the only artifact type with
 an ordered in-memory retry path; a hard termination can still lose retained
 lines before they reach disk.
+
+Returned semantic text, refusal text, and response status are logged before
+usable-output validation; a refusal is evidence of a returned response, not an
+accepted verdict. No output is invented for exceptions raised inside the SDK.
+Direct exchange-write failures can still prevent a JSON record. OpenAI's
+[Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs)
+documents refusals separately from schema-conforming answers.
 
 The dashboard exposes current in-memory status on loopback but has no
 authentication or CSRF defense. It does not serve the saved JPEGs or exchange

@@ -1,6 +1,6 @@
 # Tests for deepwork/scheduler.py — the tick methods are called directly so
-# tests are deterministic (no sleeping); one test exercises real threads with
-# tiny intervals to prove start/stop works.
+# most tests control the clock and collaborators directly; thread-coordination
+# cases use bounded waits to exercise shared locks and scheduler start/stop.
 
 import json
 import threading
@@ -709,6 +709,31 @@ def test_agent_watch_inactive_without_agentic_mode(tmp_path):
     state.start_session("normal work", now=T0)      # agentic mode NOT enabled
     sched._agent_watch_tick()
     assert checker.checks == 0                      # no capture, no API call
+
+
+def test_agent_watch_can_publish_prior_session_result_after_replacement(tmp_path):
+    """Characterize the known missing context gate, without claiming it is safe."""
+
+    checker = FakeAgentChecker([True])  # Return a busy verdict for the old capture.
+    sched, state, _ = make_scheduler(tmp_path, agent_checker=checker)
+    state.start_session("original", now=T0, agentic=True)  # Eligible before capture.
+    original_check = checker.check  # Reuse the existing fake's verdict generation.
+
+    def replace_session_during_check(path):
+        """Simulate a route replacing the session while model work is in flight."""
+
+        with state.goal_access_lifecycle():  # Use the route's transition coordinator.
+            state.start_session("replacement", now=T0 + timedelta(minutes=1),
+                                agentic=True)  # New session starts with busy=False.
+        return original_check(path)  # This result still concerns the original image.
+
+    checker.check = replace_session_during_check  # Inject the deterministic race.
+    result = sched._agent_watch_tick()  # Fake capture/model/blocker avoid real effects.
+    assert state.topic == "replacement"  # The session did change during inference.
+    assert state.agent_busy is True  # The old verdict nevertheless updates new state.
+    assert result == {"status": "working", "changed": True}
+    assert sched.blocker.applied[-1] == ()  # It requests the new session's open policy.
+    assert sched.speech.spoken == ["<agent_running>"]  # Stale feedback is also queued.
 
 
 class ObservedLock:

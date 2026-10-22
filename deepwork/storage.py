@@ -1,6 +1,6 @@
-# Results storage (requirement 8): every artifact the app produces lands
-# under results/ — stitched capture JPEGs, full LLM request/response JSON,
-# per-day session event logs, and the persisted state (allowance + topics).
+# Results storage: stitched capture JPEGs, LLM request/response records,
+# per-day session events, and persisted allowance/topics live under results/.
+# Runtime logs and temporary speech WAVs are managed separately.
 # pathlib file IO: https://docs.python.org/3/library/pathlib.html
 
 import json
@@ -15,8 +15,8 @@ log = logging.getLogger(__name__)
 
 
 def _stamp(now: datetime | None = None) -> str:
-    # One shared timestamp format for filenames: sortable microsecond precision
-    # prevents rapid same-kind LLM exchanges from overwriting each other.
+    # One sortable microsecond timestamp format reduces same-kind filename
+    # collisions; clock precision alone does not guarantee unique paths.
     # strftime codes: https://docs.python.org/3/library/datetime.html#format-codes
     return f"{now or datetime.now():%Y%m%d_%H%M%S_%f}"
 
@@ -38,8 +38,9 @@ class ResultsStore:
     def save_capture(self, image: Image.Image) -> Path:
         """Write one stitched capture as a timestamped JPEG; return its path."""
         path = self.root / "captures" / f"{_stamp()}.jpg"
-        # quality=80 halves file size versus default with negligible loss for
-        # screen content: https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg
+        # Explicit JPEG quality 80 trades image detail against encoded size;
+        # Pillow's default is 75 and actual size/loss depend on image content:
+        # https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg
         image.save(path, "JPEG", quality=80)
         log.info("capture saved: %s", path.name)
         return path

@@ -2,14 +2,15 @@
 
 Deep Work is a personal Windows 11 focus app. During a session it can block
 configured websites through the Windows hosts file, abruptly terminate named
-distraction apps, capture all monitors plus camera index `0` when readable,
+distraction apps, capture the monitors enumerated by mss plus camera index `0` when readable,
 ask OpenAI vision models whether the visible work matches the stated task, and
 speak feedback. A loopback-only Flask dashboard controls the session and shows
 the current policy, timers, scheduler health, and accepted verdict history.
 
-<img width="898" height="1227" alt="Deep Work dashboard showing session controls, access groups, and runtime status cards" src="https://github.com/user-attachments/assets/7355ca74-aafb-471e-a6ac-ad3cd8f7cd34" />
+![Dashboard showing OFF mode, retained task access, and a zero social allowance](docs/assets/dashboard-policy.png)
 
-<img width="603" height="1434" alt="Deep Work dashboard showing the mobile layout, session history, and latest verdict controls" src="https://github.com/user-attachments/assets/794a6de7-e3ea-48c8-9f05-20e73f67d8ff" />
+Screenshot from an isolated browser verification fixture with injected
+collaborators and synthetic session data; it is not evidence of live enforcement.
 
 > [!CAUTION]
 > This project handles highly sensitive screen, webcam, task, and model-output
@@ -26,7 +27,7 @@ The operating loop is:
    the website/app groups required for it.
 2. **Enforce policy:** reconcile the desired website policy into one fenced
    hosts-file section and repeatedly kill unallowed configured app processes.
-3. **Observe:** after the scheduler's fixed wait, capture each physical monitor
+3. **Observe:** after the scheduler's fixed wait, capture each monitor enumerated by mss
    plus one frame from camera index `0` when that read succeeds; resize, label,
    vertically stitch, and save the new composite as a JPEG.
 4. **Evaluate evidence:** append that JPEG to the same-context rolling window,
@@ -83,10 +84,10 @@ flowchart LR
     Agent -->|"save current JPEG"| Local
     Productive -->|"1–N chronological JPEGs + task context"| PVision["OpenAI Responses API<br/>original-detail productivity vision"]
     Agent -->|"one low-detail JPEG"| AVision["OpenAI Responses API<br/>agent activity"]
-    PVision --> Verdict
-    PVision -->|"successful exchange"| Local
-    AVision --> AgentState
-    AVision -->|"successful exchange"| Local
+    PVision -->|"usable verdict + matching context"| Verdict
+    PVision -->|"returned response, including refusal"| Local
+    AVision -->|"usable verdict"| AgentState
+    AVision -->|"returned response, including refusal"| Local
     Verdict --> State
     AgentState --> State
     Verdict --> Local
@@ -216,8 +217,10 @@ verdict corrections, and known input limitations.
 
 ### Dashboard
 
-The dashboard polls the no-cache `/status` endpoint every three seconds while
-the tab is visible and keeps the last good view through temporary failures.
+The dashboard waits three seconds after each status request finishes before
+polling again while visible; slow requests extend that interval. It keeps the
+last good view through temporary failures. Domain counts describe desired
+policy, including in dry-hosts mode, rather than measured network blocking.
 
 ## Configuration
 
@@ -238,7 +241,7 @@ The committed `.env.example` is the copyable source of defaults:
 | `CAPTURE_INTERVAL_S` | `300` | Seconds waited after a completed productivity tick before the next tick begins |
 | `PROGRESS_WINDOW_CAPTURES` | `5` | Maximum retained same-context captures; minimum 2, comparison starts at capture 2 |
 | `KILL_INTERVAL_S` | `3` | Fixed delay between enforcement ticks |
-| `AGENT_CHECK_INTERVAL_S` | `60` | Fixed delay between eligible agent-watch ticks |
+| `AGENT_CHECK_INTERVAL_S` | `60` | Fixed delay after each agent-watch tick, including an ineligible skipped tick |
 | `DAILY_SOCIAL_CAP_MIN` | `120` | Local-date social-break reservation cap |
 | `UI_PORT` | `5000` | Loopback dashboard port |
 
@@ -285,7 +288,7 @@ put confidential project names in it unless you intend to track them.
 |---|---|
 | `logs/deepwork_YYYYMMDD_HHMMSS.log` | Timestamped runtime log; complete textual LLM prompts and semantic outputs also appear uncut in the terminal |
 | `results/captures/*.jpg` | Timestamped quality-80 stitched monitor/webcam composites |
-| `results/llm/*.json` | Successful text, productivity-vision, and agent-watch request/response records; vision records reference local capture paths instead of duplicating base64 |
+| `results/llm/*.json` | Returned text, productivity-vision, and agent-watch responses, including refusals; vision records reference local capture paths instead of duplicating base64 |
 | `results/sessions/YYYYMMDD.jsonl` | Append-only session, policy, break, agent, verdict, and correction events |
 | `results/state.json` | Persisted allowance usage and topic history |
 
@@ -302,7 +305,7 @@ gitignored; never force-add them.
   active goal-access goal/groups. Agent watching uploads one low-detail stitched
   JPEG per eligible check. Text-feedback requests upload a bounded current
   session summary, including at most five recent monitor observations.
-- `TTS_ENGINE=openai` uploads each queued utterance text to the Speech API,
+- `TTS_ENGINE=openai` uploads each utterance that reaches its speaker to the Speech API,
   streams a temporary WAV, plays it, and deletes it after successful playback;
   an exception can leave that temp file. pyttsx3 keeps synthesis/playback local.
 - The code does not pass `store=False` to Responses calls. OpenAI says API data
@@ -358,6 +361,12 @@ machine. `--smoke` is the shortest real capture/API/audio path, while the
 interactive `--dry-hosts` run exercises the UI and loops without hosts writes.
 Use the bounded, side-effect-labeled checks in
 [Verification](docs/verification.md).
+
+Dashboard JavaScript regressions also use Node.js's built-in test runner:
+`node --test tests/dashboard.test.cjs`. Node.js 22 or later is a test-only
+prerequisite; the application and Python tests do not require it. See the
+[independent fact-check record](reports/2026-10-22-independent-fact-check.md)
+for evidence, corrections, sources, and remaining verification limits.
 
 ## More documentation
 

@@ -1,31 +1,34 @@
 # Central configuration for the deep-work app.
-# Global context: every other module receives a frozen Config object built
-# here from .env (python-dotenv) — no module reads os.environ directly, so
-# tests can inject a plain dict instead (dependency injection).
+# Global context: startup builds settings here, then injects settings or their
+# individual values into collaborators. Tests can pass a plain environment
+# mapping to load_config without loading a local credential file.
 # dotenv usage: https://pypi.org/project/python-dotenv/
 
-# dataclasses give an immutable, typed settings record without boilerplate:
+# frozen dataclasses reject ordinary field assignment; annotations describe types
+# but do not validate them at runtime:
 # https://docs.python.org/3/library/dataclasses.html#frozen-instances
 from dataclasses import dataclass, field
 # Mapping is the loosest read-only dict type for the env parameter:
 # https://docs.python.org/3/library/typing.html#typing.Mapping
 from typing import Mapping
 
-# load_dotenv() copies KEY=VALUE lines from ./.env into os.environ once at
-# import time of the caller (main.py) — https://pypi.org/project/python-dotenv/
+# Startup calls load_dotenv() explicitly; its default search walks upward from
+# the calling source file and existing environment values win:
+# https://bbc2.github.io/python-dotenv/#getting-started
 from dotenv import load_dotenv
 
 # The exact phrase the user must type to turn enforcement OFF (requirement 6):
 # friction against impulsive disabling while distracted.
 CONFIRMATION_PHRASE = "I will not stop cool deepwork session"
 
-# Windows hosts file location — fixed since Windows NT:
-# https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/microsoft-tcp-ip-host-name-resolution-order
+# Default path used by this app for a Windows installation under C:\Windows;
+# Windows itself locates hosts under its installation directory:
+# https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 
 # Site groups: human-readable name -> explicit domain variants.
-# Hosts files have NO wildcard support, so every subdomain a browser might
-# hit must be listed (https://www.currentware.com/blog/how-to-block-websites-using-hosts-file/).
+# These are explicit hostname mappings, not a complete inventory of each service.
+# System-resolver behavior: https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues
 # Names are the handles used by break allowances ("allow only reddit").
 SITE_DOMAINS: dict[str, list[str]] = {
     "reddit": ["reddit.com", "old.reddit.com", "np.reddit.com", "i.redd.it", "v.redd.it"],
@@ -35,8 +38,8 @@ SITE_DOMAINS: dict[str, list[str]] = {
     "hackernews": ["news.ycombinator.com"],
     "linkedin": ["linkedin.com"],
     "bluesky": ["bsky.app"],
-    # Per-author *.substack.com subdomains cannot be enumerated — known
-    # limitation documented in README.
+    # Author subdomains are not enumerated in this catalog; see README's
+    # explicit-hostname limitation before relying on Substack blocking.
     "substack": ["substack.com"],
     "facebook": ["facebook.com", "m.facebook.com", "fb.com"],
     "lesswrong": ["lesswrong.com", "greaterwrong.com"],
@@ -44,14 +47,9 @@ SITE_DOMAINS: dict[str, list[str]] = {
     "4chan": ["4chan.org", "boards.4chan.org", "4channel.org", "boards.4channel.org"],
 }
 
-# Site groups that count as "social media" for the 2 h/day allowance
-# (requirement 5) — HN/LessWrong/EA Forum are distracting but the spec's
-# allowance language targets social media; keep the full blocklist for ON mode.
-SOCIAL_SITES = {"reddit", "youtube", "twitter", "discord", "bluesky", "facebook", "4chan"}
-
 # App groups: human name -> process executable names psutil will match
-# case-insensitively. steamwebhelper.exe is Steam's always-running CEF child:
-# https://help.steampowered.com/en/faqs/view/1C48-3777-0596-234B
+# case-insensitively. Including Steam's web helper is an explicit local policy;
+# this list does not establish which processes are running on a particular PC.
 APP_PROCESSES: dict[str, list[str]] = {
     "discord": ["discord.exe"],
     "telegram": ["telegram.exe"],
@@ -60,10 +58,9 @@ APP_PROCESSES: dict[str, list[str]] = {
 
 
 def expand_www(domains: list[str]) -> list[str]:
-    # Browsers try both apex and www forms, so hosts entries need both
-    # (https://www.howtogeek.com/784196/how-to-edit-the-hosts-file-on-windows-10-or-11/).
-    # A domain with exactly one dot is an apex (reddit.com) — add its www
-    # twin; deeper names (old.reddit.com) already pin a subdomain.
+    # Add a www alias for this catalog's one-dot hostnames. This is a local
+    # heuristic, not a general registered-domain parser (consider example.co.uk):
+    # https://publicsuffix.org/learn/
     out: list[str] = []
     for d in domains:
         out.append(d)                       # keep the original entry
@@ -82,8 +79,9 @@ def all_blocked_domains() -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Config:
-    # Frozen dataclass = read-only after construction, safe to share across
-    # threads without locks (https://docs.python.org/3/library/dataclasses.html).
+    # The intended str/int/tuple values need no mutation during a run. Frozen
+    # only prevents ordinary field assignment; it is not general synchronization:
+    # https://docs.python.org/3.13/library/dataclasses.html#frozen-instances
     openai_api_key: str
     # Every text/image Responses workload defaults to the cost-sensitive
     # GPT-6 Luna tier at medium, OpenAI's documented default; keeping
@@ -100,7 +98,7 @@ class Config:
     tts_engine: str = "openai"               # "openai" | "pyttsx3" fallback
     tts_model: str = "gpt-4o-mini-tts"       # https://developers.openai.com/api/docs/guides/text-to-speech
     tts_voice: str = "coral"                 # one of the 13 built-in voices
-    capture_interval_s: int = 300            # requirement 3: every 5 minutes
+    capture_interval_s: int = 300            # delay after each completed tick
     progress_window_captures: int = 5        # max history, min 2 for comparison
     kill_interval_s: int = 3                 # app-kill sweep period (seconds)
     agent_check_interval_s: int = 60         # agentic mode: AI-agent activity poll
@@ -108,8 +106,9 @@ class Config:
     ui_port: int = 5000                      # Flask default port
     hosts_path: str = HOSTS_PATH
     confirmation_phrase: str = CONFIRMATION_PHRASE
-    # default_factory because tuples from a function call are mutable-default
-    # territory: https://docs.python.org/3/library/dataclasses.html#default-factory-functions
+    # Recompute catalog-derived tuples for each Config; tuples themselves are
+    # immutable and do not require a factory to avoid mutable defaults:
+    # https://docs.python.org/3.13/library/dataclasses.html#default-factory-functions
     blocked_domains: tuple[str, ...] = field(default_factory=all_blocked_domains)
     kill_processes: tuple[str, ...] = field(
         default_factory=lambda: tuple(p for procs in APP_PROCESSES.values() for p in procs)
@@ -161,5 +160,5 @@ def load_config_from_dotenv() -> Config:
     # Production entry point: pull .env into os.environ, then read it.
     # Import os here to keep the module's test path free of os.environ.
     import os
-    load_dotenv()                            # no-op if .env is absent
+    load_dotenv()                            # search upward; do not override env
     return load_config(os.environ)

@@ -253,14 +253,17 @@ with OpenAI's current
 [API error guidance](https://developers.openai.com/api/docs/guides/error-codes).
 Verify the API key's project, billing/limits, model access, and network.
 
-`VISION_MODEL` must support image input with `detail="original"`. A failed API
-call is logged but not saved as a successful `results/llm/*.json` exchange.
+`VISION_MODEL` must support image input with `detail="original"`. An exception
+before the SDK returns a response is logged but has no response object to save.
+A returned refusal, incomplete response, or missing verdict is logged and saved
+before rejection; it must not be mistaken for an accepted evaluation.
 Depending on where failure occurred, its capture can remain on disk and in the
 rolling in-memory window for a later request.
 
 ### There is no sound
 
-- Search for `speaking:` followed by `TTS failed`.
+- Search for `speech queued:` followed by `TTS failed`; older logs used
+  `speaking:` for the enqueue operation. Queueing is not proof of playback.
 - With exact `TTS_ENGINE=openai`, verify network, speech-model/voice access,
   Windows WAV playback, and the OS temporary directory. A failed path can leave
   a temporary WAV.

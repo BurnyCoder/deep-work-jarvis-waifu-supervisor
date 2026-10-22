@@ -1,5 +1,5 @@
 # Tests for deepwork/state.py — the thread-safe session state machine that
-# every other module consults. Written FIRST (TDD). Time is injected via a
+# every other module consults. Time is injected via a
 # `now` parameter everywhere so tests never sleep (testing-clock pattern:
 # https://docs.pytest.org/en/stable/how-to/monkeypatch.html).
 
@@ -1039,6 +1039,47 @@ def test_context_summary_freezes_elapsed_minutes_after_disable():
     assert "minutes into session: 10" in context
 
 
+def test_repeated_disable_and_shutdown_preserve_first_session_end():
+    """Later OFF requests must not add idle time to dashboard or feedback totals."""
+
+    s = make_state()  # Use the existing fixture with an injected session clock.
+    s.start_session("write", now=T0)  # Begin the interval whose duration is retained.
+    ended_at = T0 + timedelta(minutes=10)  # The first Disable defines its endpoint.
+    assert s.try_disable(CONFIRMATION_PHRASE, now=ended_at)
+    # Repeated browser submissions and later cleanup must preserve that endpoint.
+    assert s.try_disable(CONFIRMATION_PHRASE, now=T0 + timedelta(minutes=20))
+    s.begin_shutdown(now=T0 + timedelta(minutes=30))
+    assert s.session_end == ended_at  # No later OFF operation extends the session.
+    assert s.status_snapshot(now=T0 + timedelta(hours=1))["session_elapsed_s"] == 600
+    assert "minutes into session: 10" in s.context_summary(now=T0 + timedelta(hours=1))
+
+
+def test_shutdown_records_active_session_end_only_once():
+    """Shutdown can end a running session, but repeated cleanup cannot extend it."""
+
+    s = make_state()  # Keep the check independent of threads, files, and hardware.
+    s.start_session("write", now=T0)  # No dashboard Disable precedes this cleanup.
+    ended_at = T0 + timedelta(minutes=10)  # Shutdown owns the first end timestamp.
+    s.begin_shutdown(now=ended_at)
+    s.begin_shutdown(now=T0 + timedelta(minutes=20))  # Simulate repeated cleanup.
+    assert s.session_end == ended_at  # The original active interval remains fixed.
+    assert s.status_snapshot(now=T0 + timedelta(hours=1))["session_elapsed_s"] == 600
+
+
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_off_transition_without_session_does_not_invent_an_end(shutdown):
+    """An untouched OFF startup has no completed session for either exit path."""
+
+    s = make_state()  # A fresh process has neither a start nor an end timestamp.
+    if shutdown:  # Exercise the registered cleanup's state transition directly.
+        s.begin_shutdown(now=T0)
+    else:  # The same invariant applies to an already-OFF dashboard submission.
+        assert s.try_disable(CONFIRMATION_PHRASE, now=T0)
+    assert s.session_start is None  # Neither operation fabricates a start.
+    assert s.session_end is None  # An end requires a real session interval.
+    assert s.status_snapshot(now=T0)["session_elapsed_s"] == 0
+
+
 def test_policy_independent_feedback_waits_only_for_event_release():
     """Corrections bypass hosts-policy approval but retain JSONL-before-speech."""
 
@@ -1095,6 +1136,9 @@ def test_agentic_busy_pauses_productivity_monitoring():
     assert s.monitoring_active
     s.set_agent_busy(True)
     assert not s.monitoring_active
+    assert s.status_snapshot(now=T0)["monitoring_pause_reason"] == (
+        "The watcher reports AI coding agent activity."
+    )
     s.set_agent_busy(False)
     assert s.monitoring_active
 

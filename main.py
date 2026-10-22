@@ -1,7 +1,6 @@
 # Deep Work — top-level wrapper. This file is deliberately a table of
-# contents: each phase below is one clearly-named function from a module that
-# hides its implementation details (project rule: "one abstracted wrapper
-# file that calls different clearly named readable phases").
+# contents: the named orchestration phases below delegate implementation to
+# imported collaborators (project rule: keep the wrapper readable).
 # Run:  uv run python main.py            (full app, asks for UAC elevation)
 #       uv run python main.py --smoke    (one capture→analyze→speak cycle, no admin)
 #       uv run python main.py --dry-hosts (full app, hosts writes only logged)
@@ -97,8 +96,8 @@ def run_smoke(scheduler, speech) -> None:
     scheduler.state.start_session("smoke test")
     scheduler._monitor_tick()                      # the real pipeline, once
     verdict = scheduler.state.last_verdict or {}
-    # _monitor_tick queues the only utterance; waiting verifies playback without
-    # duplicating the same verdict through a special smoke-only speech path.
+    # Wait for any queued utterance without duplicating it. This bounded wait
+    # does not verify audible playback; inspect TTS logs and the actual audio.
     speech.wait_idle(timeout=60)
     log.info("smoke cycle complete: %s", verdict)
 
@@ -123,7 +122,7 @@ def run_mode(
         from deepwork.webui.server import serve_dashboard
 
         server_runner = serve_dashboard
-    scheduler.start()                              # enforcer + monitor threads
+    scheduler.start()                              # Enforcer, monitor, agent watcher.
     # The server wrapper binds before launching its readiness worker. Direct
     # CLI runs stay manual unless `--open-browser` is explicitly supplied.
     server_runner(
@@ -134,13 +133,14 @@ def run_mode(
 
 
 def shutdown_runtime(scheduler, state, blocker, store, speech) -> None:
-    """Stop producers, serialize final hosts cleanup, and persist local state."""
+    """Request producer stop, then attempt serialized cleanup and state saving."""
 
     from deepwork.feedback.goal_access import InlineGoalAccessFeedback
     from deepwork.state import goal_access_event
 
-    # Stop scheduler producers before publishing OFF. Flask request threads may
-    # still be unwinding, so the same state reconciliation lock used at runtime
+    # Request producer stop before publishing OFF. Bounded joins can leave an
+    # active tick running, and Flask requests may still be unwinding, so the same
+    # state reconciliation lock used at runtime
     # must own the final clear; a direct blocker.clear() could race an older
     # apply and leave its blocklist behind after shutdown.
     try:
@@ -245,9 +245,9 @@ def main() -> None:
         log.error("configuration invalid: %s", exc)
         sys.exit(1)
 
-    # --- phase 5: crash/exit safety — never leave the hosts file blocked ---
-    # atexit runs on normal exit and unhandled exceptions (not on hard kill;
-    # README documents manual cleanup): https://docs.python.org/3/library/atexit.html
+    # --- phase 5: register best-effort cleanup for normal interpreter exit ---
+    # Hard termination can skip atexit, and registered cleanup can itself fail;
+    # README documents manual recovery: https://docs.python.org/3/library/atexit.html
     atexit.register(
         shutdown_runtime,
         scheduler,

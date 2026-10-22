@@ -12,8 +12,8 @@ log = logging.getLogger(__name__)
 
 
 def is_admin() -> bool:
-    # shell32.IsUserAnAdmin returns nonzero when the token is elevated:
-    # https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-isuseranadmin
+    # shell32.IsUserAnAdmin tests Administrators-group membership for this call:
+    # https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-isuseranadmin
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except (AttributeError, OSError):  # non-Windows or DLL failure → not admin

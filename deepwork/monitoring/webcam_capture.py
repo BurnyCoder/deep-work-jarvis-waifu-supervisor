@@ -1,6 +1,7 @@
 # Webcam single-frame capture via OpenCV (requirement 3). The camera is
-# opened, read once, and released every cycle so the webcam LED is not lit
-# between captures and other apps can use the camera.
+# opened, read once, and released every cycle so this app does not retain its
+# capture handle between ticks. LED behavior and device sharing depend on the
+# camera, driver, and other applications; release does not guarantee either.
 # VideoCapture docs: https://docs.opencv.org/4.x/d8/dfe/classcv_1_1VideoCapture.html
 
 import logging
@@ -18,18 +19,18 @@ def frame_to_image(frame) -> Image.Image:
 
 
 def capture_webcam() -> Image.Image | None:
-    """One webcam frame, or None when unavailable (non-fatal by design)."""
-    # CAP_DSHOW forces the DirectShow backend on Windows — the default MSMF
-    # backend is known to take seconds to open the device:
+    """Return one frame or None for a failed read; capture exceptions propagate."""
+    # Request DirectShow on Windows. The linked issue reports slow MSMF startup
+    # on some configurations; it is not a timing guarantee for every device:
     # https://github.com/opencv/opencv/issues/17687
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     try:
         ok, frame = cap.read()                    # ok=False → no usable frame
         if not ok:
-            # Webcam busy/absent must never break the monitoring loop —
-            # the stitched image simply omits the webcam tile.
+            # A false read result omits the webcam tile; exceptions still fail
+            # the capture tick and are reported by the scheduler.
             log.warning("webcam capture failed (device busy or absent)")
             return None
         return frame_to_image(frame)
     finally:
-        cap.release()                             # free device + turn LED off
+        cap.release()                             # close this capture handle
