@@ -337,7 +337,7 @@
           : "Agent watching is inactive while enforcement is off.",
       );
     } else if (status.agent_busy) {
-      setText("agent-state", "Agent working");
+      setText("agent-state", "Watcher reports activity");
       setText("agent-detail", "Website policy allows all configured domains; productivity monitoring is paused.");
     } else {
       // False also describes a newly enabled watcher before its first result.
