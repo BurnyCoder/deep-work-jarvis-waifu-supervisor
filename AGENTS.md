@@ -27,6 +27,7 @@ uv sync --locked                   # reproduce the checked-in lockfile
 uv sync                            # update after an intentional dependency edit
 uv lock --check                    # verify lockfile/project metadata consistency
 uv run pytest                      # hardware/network/admin-free automated suite
+node --test tests/dashboard.test.cjs  # JS regressions; Node.js 22+ test-only
 uv run python main.py --help       # CLI surface
 uv run python main.py --dry-hosts  # UI + scheduler; no UAC/hosts writes
 uv run python main.py --dry-hosts --open-browser  # readiness-gated browser; dry hosts
@@ -77,6 +78,8 @@ narrow owning page and link to it; do not copy its detailed contract into
   allowance usage and topic history are reloaded into live state. Captures,
   exchanges, JSONL events, and logs remain on disk; live sessions/grants never
   reload.
+- Disable and shutdown preserve the first end timestamp of a completed session;
+  repeated OFF actions must not increase its elapsed duration or feedback context.
 - A successful productivity capture is evaluated immediately against the
   available rolling window only if its versioned monitoring context still
   matches. Capture one judges only current task alignment and cannot establish
@@ -168,8 +171,9 @@ narrow owning page and link to it; do not copy its detailed contract into
   `verdict_correction` acknowledgement. The correction is live even if append
   fails, but feedback is policy-independent and waits for ordered event
   durability. Suppress the original verdict utterance if any correction lands
-  before it reaches speech; work already sent to a model may still complete and
-  persist. Duplicate, stale, model, or speech failures never roll correction
+  before it is enqueued for speech; queued or in-progress audio is not canceled.
+  Work already sent to a model may still complete and persist.
+  Duplicate, stale, model, or speech failures never roll correction
   state back.
 - Scheduler intervals are fixed delays after a tick finishes, not wall-clock
   schedules. Starting a session does not reset their countdowns.
@@ -272,7 +276,8 @@ narrow owning page and link to it; do not copy its detailed contract into
 - The Werkzeug development server hosting Flask stays on `127.0.0.1`. Server
   construction binds `UI_PORT` before any browser worker starts. With
   `--open-browser`, a 30-second monotonic deadline retries `/status`, treats any
-  completed HTTP response as reachable, and attempts at most one default-browser
+  received HTTP status and response headers as reachable without draining the
+  body, and attempts at most one default-browser
   tab. Bind failure prevents launch; readiness/browser failure is logged without
   stopping a bound server; server exit cancels pending opening; smoke bypasses
   all server/browser work. The server has no authentication or CSRF defense and
@@ -289,10 +294,12 @@ narrow owning page and link to it; do not copy its detailed contract into
   sent with a productivity capture. Allowed Discord, Telegram, or other group
   activity remains conditionally productive only when concrete visible
   evidence serves the topic and, for a goal grant, its explicit goal.
-- Persist each successful text/productivity-vision/agent-watch Responses API
-  object under `results/llm/`. For vision requests, persist full text plus
-  capture-file references instead of duplicating base64 image bytes. Failed
-  calls and streamed TTS responses/audio are not stored there.
+- Log semantic output and persist every text/productivity-vision/agent-watch
+  Responses object returned by the SDK before checking usable output, including
+  refusals and incomplete responses. Missing verdicts must not publish state or
+  speech. For vision requests, persist full text plus capture-file references
+  instead of duplicating base64. Exceptions before the SDK returns an object
+  and streamed TTS responses/audio are not stored there; persistence can fail.
 - A verdict correction uploads no new image and is not analyzer training. Its
   neutral acknowledgement is a separate text request containing the
   correction labels and the bounded `SessionState.context_summary()` snapshot;
@@ -375,7 +382,7 @@ For every change:
    changes, also exercise the relevant Flask flow or full local app. For
    verdict corrections, cover reverse, restore, duplicate, stale revision,
    BREAK-completion streak invalidation, JSONL retry, neutral acknowledgement,
-   and suppression of in-flight original speech; use
+   and suppression of original feedback still generating before speech enqueue; use
    `docs/verdict-corrections.md` for the manual contract.
    For server/launcher changes, run
    `uv run python main.py --dry-hosts --open-browser` with an available
@@ -423,8 +430,9 @@ network, or model nondeterminism.
   is the fallback.
 - `.python-version` selects Python 3.13. Do not invent a Python 3.14 wheel
   limitation without checking current package indexes.
-- The pyttsx3 adapter constructs an engine per utterance to avoid the linked
-  upstream reuse issue in `feedback/tts.py`.
+- The pyttsx3 adapter calls `init()` per utterance without retaining its own
+  engine reference; the library may return a cached engine. This is not a
+  guarantee of a new instance or a proven workaround for all reuse failures.
 - Access is intentionally group-based rather than split by backend. An existing
   `projects.json` preset containing `discord` now opens Discord websites and
   spares `discord.exe`; Telegram and Steam are valid app-only preset keys. Do

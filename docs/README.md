@@ -32,3 +32,7 @@ When behavior changes, check executable code and focused tests first, then
 `.env.example`, `pyproject.toml`, and `uv.lock`, before updating the owning
 guide. External platform claims should be checked against current primary
 documentation.
+
+The dated [independent fact-check evidence table](../reports/2026-10-22-independent-fact-check.md)
+records checked claims, corrections, supporting sources, and verification
+limits across these pages and the implementation.

@@ -83,8 +83,8 @@ through the dry-run blocker and saves reloadable state.
 
 For a dashboard run, `scheduler.start()` runs before `serve_dashboard()`. The
 server factory then binds `127.0.0.1:UI_PORT` before any optional readiness
-worker starts. That worker treats any completed `/status` HTTP response as
-reachable and attempts one default-browser tab. The server path and its failure
+worker starts. That worker treats received `/status` HTTP status and headers as
+reachable without validating the body and attempts one default-browser tab. The server path and its failure
 semantics are covered in [startup](startup.md).
 
 Normal shutdown stops scheduler producers, enters terminal OFF state, attempts
@@ -150,12 +150,12 @@ flowchart TD
         AgentSave --> Store
         AgentSave --> AgentAnalyzer["single-capture activity checker"]
         AgentAnalyzer -->|"low-detail structured request"| AgentResponses["OpenAI Responses API<br/>agent activity"]
-        ProductivityResponses -->|"successful exchange"| Store
-        AgentResponses -->|"successful exchange"| Store
-        ProductivityResponses --> ContextGate{"same active context<br/>after analysis?"}
+        ProductivityResponses -->|"returned response, including refusal"| Store
+        AgentResponses -->|"returned response, including refusal"| Store
+        ProductivityResponses -->|"usable parsed verdict only"| ContextGate{"same active context<br/>after analysis?"}
         ContextGate -- yes -->|"record verdict and source event"| Life
         ContextGate -- no --> Stale["context_changed<br/>no verdict/event/speech"]
-        AgentResponses -->|"no post-inference context gate"| Life
+        AgentResponses -->|"usable verdict; no post-inference context gate"| Life
     end
 
     subgraph Enforcement["Enforcement backends"]
@@ -172,12 +172,12 @@ flowchart TD
         Gates --> Ready["ready FIFO"]
         Ready --> TransitionWorker
         TransitionWorker -->|"text generation"| TextResponses["OpenAI Responses API<br/>transition feedback text"]
-        TextResponses -->|"successful exchange"| Store
-        TextResponses --> SpeechQueue
+        TextResponses -->|"returned response, including refusal"| Store
+        TextResponses -->|"usable nonempty text only"| SpeechQueue
         Monitor -->|"ordinary reason after source event"| VerdictSpeechGate{"same latest verdict<br/>label + revision?"}
         Monitor -->|"nudge/milestone after source event"| MonitorText["OpenAI Responses API<br/>verdict feedback text"]
-        MonitorText -->|"successful exchange"| Store
-        MonitorText --> VerdictSpeechGate
+        MonitorText -->|"returned response, including refusal"| Store
+        MonitorText -->|"usable nonempty text only"| VerdictSpeechGate
         VerdictSpeechGate -- yes --> SpeechQueue
         VerdictSpeechGate -- no --> Suppressed["suppress stale utterance"]
         SpeechQueue --> TTS["OpenAI TTS or pyttsx3"]
@@ -197,8 +197,9 @@ The productivity path's final context gate is the atomic
 `record_verdict_if_context()` call. The agent-watch arrow deliberately has no
 equivalent post-inference gate: it checks eligibility before capture, then may
 publish a stale busy/idle transition if mode or session state changes during
-its model call. That current limitation is covered by tests and must not be
-silently described as having productivity's stronger guarantee.
+its model call. The focused
+`test_agent_watch_can_publish_prior_session_result_after_replacement` regression
+characterizes that session-replacement case; it is not a freshness guarantee.
 
 ## Module ownership
 
@@ -213,12 +214,13 @@ moves; other documents should link here instead of maintaining another copy.
 | `deepwork/logging_setup.py` | Whole-second-named UTF-8 file logging plus real-time terminal logging |
 | `deepwork/state.py` | Locked modes, terminal shutdown, grants, breaks, allowance, agent state, monitoring revisions, retryable policy reconciliation, corrected verdict accounting, feedback gates, and status snapshots |
 | `deepwork/storage.py` | Quality-80 capture JPEGs, text/vision exchange JSON, retryable ordered session JSONL, and persisted allowance/topic state |
+| `deepwork/llm_output.py` | Shared logging/persistence of returned Responses objects and validation of usable output |
 | `deepwork/runtime_status.py` | Locked JSON-safe fixed-delay cadence, phase, result, countdown, and error state |
 | `deepwork/scheduler.py` | Enforcer, context-safe productivity monitor, agent watcher, fixed-delay daemon loops, and the shared capture lock |
 | `deepwork/blocking/admin.py` | Windows administrator check and `runas` self-relaunch |
 | `deepwork/blocking/hosts_blocker.py` | Marker-fenced hosts replacement/removal, best-effort DNS-cache flush, and the dry-run adapter |
-| `deepwork/blocking/app_killer.py` | Abrupt case-insensitive exact process-name termination through psutil |
-| `deepwork/monitoring/screen_capture.py` | One Pillow image per physical monitor through mss |
+| `deepwork/blocking/app_killer.py` | Case-insensitive exact-name termination requests through psutil; does not wait for process exit |
+| `deepwork/monitoring/screen_capture.py` | One Pillow image per monitor enumerated by mss, excluding its aggregate entry |
 | `deepwork/monitoring/webcam_capture.py` | DirectShow camera-index-0 frame; an unsuccessful read returns `None`, while an exception fails that capture tick |
 | `deepwork/monitoring/stitcher.py` | Labeled vertical composite after resizing each monitor/webcam tile to 960 pixels wide |
 | `deepwork/monitoring/analyzer.py` | Original-detail rolling productivity verdicts and low-detail single-capture agent-activity verdicts |
@@ -384,14 +386,17 @@ whose earlier JSONL line also needed a durability retry. Once ready, one
 transition worker claims each request before its optional model call and
 submits the result to the process-wide speech queue. Model or TTS failure is
 logged and does not roll back state, events, or enforcement, nor does it retry
-an already claimed request.
+an already claimed request. Once the gates approve a transition request, later
+policy changes do not revalidate it: delayed speech can describe a transition
+whose resulting access has since changed.
 
 Ordinary productivity speech joins the same speech queue but bypasses the
 transition worker: a normal productive verdict uses its vision-generated
 reason; off-track and milestone outcomes first use `MessageGenerator`. Before
 enqueue, the monitor rechecks verdict identity, effective label, and correction
 revision under the lifecycle coordinator so an accepted correction suppresses
-stale original speech.
+stale original speech that has not yet been enqueued. Already queued or playing
+audio is not canceled.
 
 ## Storage and status surfaces
 
@@ -401,7 +406,7 @@ and reload behavior are:
 | Path | Writer | Reloaded into live state? |
 |---|---|---:|
 | `results/captures/*.jpg` | Productivity and agent-watch ticks that reach their save step | no |
-| `results/llm/*.json` | Successful productivity-vision, agent-watch-vision, and text-feedback Responses calls | no |
+| `results/llm/*.json` | Returned productivity-vision, agent-watch-vision, and text-feedback Responses objects, including refusals | no |
 | `results/sessions/YYYYMMDD.jsonl` | Flask routes and scheduler/shutdown transitions | no |
 | `results/state.json` | Routes and shutdown | only daily social usage and prior topics |
 | `logs/deepwork_*.log` | Root logging configuration | no |
