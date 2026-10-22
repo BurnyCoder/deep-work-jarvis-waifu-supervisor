@@ -1136,6 +1136,9 @@ def test_agentic_busy_pauses_productivity_monitoring():
     assert s.monitoring_active
     s.set_agent_busy(True)
     assert not s.monitoring_active
+    assert s.status_snapshot(now=T0)["monitoring_pause_reason"] == (
+        "The watcher reports AI coding agent activity."
+    )
     s.set_agent_busy(False)
     assert s.monitoring_active
 

@@ -1198,7 +1198,7 @@ class SessionState:
             elif self.mode is Mode.BREAK:
                 pause_reason = "A scheduled break is active."
             elif self.agentic_mode and self.agent_busy:
-                pause_reason = "The AI coding agent is working."
+                pause_reason = "The watcher reports AI coding agent activity."
             else:
                 pause_reason = None
 

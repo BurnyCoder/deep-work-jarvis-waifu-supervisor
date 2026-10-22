@@ -138,6 +138,7 @@ test("agent-busy task access describes the monitoring pause", async () => {
   const ui = dashboard();
   await ui.respond(status({ agentic_mode: true, agent_busy: true,
     monitoring_active: false, work_access: { allowed_group_labels: ["Discord"] } }));
+  assert.equal(ui.get("agent-state").textContent, "Watcher reports activity");
   assert.match(ui.get("project-detail").textContent, /monitoring is paused/);
   assert.match(ui.get("agent-detail").textContent, /Website policy allows/);
   assert.doesNotMatch(ui.get("agent-detail").textContent, /restrictions are temporarily open/);
