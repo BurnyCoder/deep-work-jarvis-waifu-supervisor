@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 CONFIRMATION_PHRASE = "I will not stop cool deepwork session"
 
 # Default path used by this app for a Windows installation under C:\Windows;
-# Windows itself locates hosts under its installation directory:
+# Microsoft's DNS troubleshooting article shows hosts at this location:
 # https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 
