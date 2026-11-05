@@ -3,7 +3,7 @@
 # requesting termination of exact-name targets not spared by the current
 # task/preset, goal, or break scopes. Timing also depends on tick duration and
 # process permissions; the sweep does not wait for termination to complete.
-# psutil docs: https://psutil.readthedocs.io/en/latest/
+# psutil 7.2 docs (the uv.lock version): https://psutil.io/7.2/
 
 import logging
 
@@ -23,7 +23,7 @@ def kill_targets(process_names: list[str] | tuple[str, ...]) -> list[str]:
     killed: list[str] = []
     # process_iter(["name"]) pre-fetches each process's name into proc.info;
     # processes can still disappear or deny access before the kill call:
-    # https://psutil.readthedocs.io/en/latest/#psutil.process_iter
+    # https://psutil.io/7.2/#psutil.process_iter
     for proc in psutil.process_iter(["name"]):
         try:
             name = proc.info.get("name") or ""
@@ -34,7 +34,7 @@ def kill_targets(process_names: list[str] | tuple[str, ...]) -> list[str]:
                 killed.append(name)
         # Documented races: process already gone, or protected by the OS —
         # both must be survived silently in a periodic sweep:
-        # https://psutil.readthedocs.io/en/latest/#psutil.NoSuchProcess
+        # https://psutil.io/7.2/#psutil.NoSuchProcess
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     if killed:
