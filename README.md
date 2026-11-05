@@ -236,7 +236,7 @@ The committed `.env.example` is the copyable source of defaults:
 | `TEXT_MODEL` | `gpt-6-luna` | Feedback-message model |
 | `TEXT_REASONING_EFFORT` | `medium` | Feedback-message reasoning effort |
 | `TTS_ENGINE` | `openai` | Exact `openai` selects OpenAI speech; every other value currently falls back to pyttsx3 |
-| `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
+| `TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model; OpenAI lists it for [removal on January 6, 2027](https://developers.openai.com/api/docs/deprecations) |
 | `TTS_VOICE` | `coral` | OpenAI speech voice |
 | `CAPTURE_INTERVAL_S` | `300` | Seconds waited after a completed productivity tick before the next tick begins |
 | `PROGRESS_WINDOW_CAPTURES` | `5` | Maximum retained same-context captures; minimum 2, comparison starts at capture 2 |
