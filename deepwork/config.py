@@ -83,8 +83,9 @@ class Config:
     # only prevents ordinary field assignment; it is not general synchronization:
     # https://docs.python.org/3.13/library/dataclasses.html#frozen-instances
     openai_api_key: str
-    # Every text/image Responses workload defaults to the cost-sensitive
-    # GPT-6 Luna tier at medium, OpenAI's documented default; keeping
+    # Every text/image Responses workload defaults to GPT-6 Luna (OpenAI's
+    # "most efficient model for focused, high-volume tasks") at medium,
+    # OpenAI's documented default reasoning effort for it; keeping
     # each field separate still lets .env tune one workload independently:
     # https://developers.openai.com/api/docs/models/gpt-6-luna
     vision_model: str = "gpt-6-luna"
@@ -96,6 +97,8 @@ class Config:
     # Speech remains on an audio-output model because Luna outputs text only:
     # https://developers.openai.com/api/docs/models/gpt-6-luna
     tts_engine: str = "openai"               # "openai" | "pyttsx3" fallback
+    # gpt-4o-mini-tts is deprecated; OpenAI lists removal on January 6, 2027:
+    # https://developers.openai.com/api/docs/deprecations
     tts_model: str = "gpt-4o-mini-tts"       # https://developers.openai.com/api/docs/guides/text-to-speech
     tts_voice: str = "coral"                 # one of the 13 built-in voices
     capture_interval_s: int = 300            # delay after each completed tick
