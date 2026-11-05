@@ -136,8 +136,9 @@ Check in this order:
    `# <<< deepwork block end` markers plus IPv4 and IPv6 entries for configured
    hostnames.
 3. Run `ipconfig /displaydns` and `ipconfig /flushdns`, then retry. Microsoft
-   documents that the Windows DNS client checks its cache, then the hosts file,
-   then a DNS server, and that
+   documents that the Windows DNS client
+   [checks its cache, then the hosts file, then a DNS server](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/troubleshoot-dns-client-resolution-issues#scenario-2-theres-an-entry-for-the-domain-name-in-the-hosts-file),
+   and that
    [`/flushdns` resets the resolver cache](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/ipconfig).
 4. Test the exact configured hostname. The policy is an explicit list, not a
    wildcard: alternate domains, direct IP access, unlisted subdomains such as
@@ -169,7 +170,8 @@ success.
 This project intentionally edits the Windows hosts file. Microsoft documents
 that its
 [HostsFileHijack detection](https://www.microsoft.com/en-us/wdsi/threats/malware-encyclopedia-description?Name=SettingsModifier%3AWin32%2FHostsFileHijack)
-flags suspicious hosts modifications and may reset entries. Verify the
+flags suspicious hosts modifications and that remediating it resets the
+hosts file to default, removing existing entries. Verify the
 detection path and this application's fenced entries before considering any
 exclusion. Do not broadly disable Defender.
 
