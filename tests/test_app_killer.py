@@ -1,6 +1,6 @@
 # Tests for deepwork/blocking/app_killer.py — psutil is monkeypatched with
 # fake process objects so no real program is ever killed by the test suite.
-# psutil API being faked: https://psutil.readthedocs.io/en/latest/#psutil.process_iter
+# psutil API being faked: https://psutil.io/7.2/#psutil.process_iter
 
 import psutil
 import pytest
@@ -39,7 +39,7 @@ def test_kills_only_targets_case_insensitively(monkeypatch):
 def test_survives_process_races_and_permissions(monkeypatch):
     # A process may exit between iteration and kill (NoSuchProcess) or be
     # protected (AccessDenied) — both documented psutil exceptions:
-    # https://psutil.readthedocs.io/en/latest/#psutil.NoSuchProcess
+    # https://psutil.io/7.2/#psutil.NoSuchProcess
     vanishing = FakeProc("steam.exe", raises=psutil.NoSuchProcess(1234))
     protected = FakeProc("telegram.exe", raises=psutil.AccessDenied(1234))
     patch_procs(monkeypatch, [vanishing, protected])
